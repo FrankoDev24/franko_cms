@@ -32,7 +32,7 @@ const Orders = () => {
 
   const agentNames = [
     "Peggy Andoh", "sarah koffie", "Florence Gbeve", "Regina Baah", "Hannah Jethro",
-    "Sadam Ansamah", "Judith Tsegah", "Dorcas Kumaku", "Roseline Boateng"
+    "Sadam Ansamah", "Judith Tsegah", "Dorcas Kumaku", "Roseline Boateng", "Mavis Attipoe"
   ];
 
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
