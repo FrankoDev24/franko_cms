@@ -636,7 +636,7 @@ const ctp001Slice = createSlice({
         state.ctp001Products = sortByNewest(products || []);
         state.ctp001Pagination = {
           pageNumber: pageNumber || 1,
-          recordPerPage: recordPerPage || 2000,
+          recordPerPage: recordPerPage || 500,
           total: total || (products || []).length,
         };
       })

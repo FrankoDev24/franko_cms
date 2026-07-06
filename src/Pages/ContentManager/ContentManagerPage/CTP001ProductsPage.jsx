@@ -135,7 +135,7 @@ const CTP001ProductsPage = () => {
   }, []);
 
   useEffect(() => {
-    dispatch(getCTP001Products({ pageNumber: 1, recordPerPage: 2000 }));
+    dispatch(getCTP001Products({ pageNumber: 1, recordPerPage: 500 }));
     dispatch(getMergedProducts());
   }, [dispatch]);
 
@@ -721,11 +721,11 @@ const CTP001ProductsPage = () => {
           }}
           pagination={{
             current: pagination.pageNumber,
-            pageSize: pagination.recordPerPage || 2000,
+            pageSize: pagination.recordPerPage || 500,
             total: pagination.total,
             showSizeChanger: true,
             showQuickJumper: true,
-            pageSizeOptions: ["50", "100", "500", "1000", "2000"],
+            pageSizeOptions: [ "500", "1000", "2000"],
             showTotal: (total, range) => `${range[0]}–${range[1]} of ${total}`,
           }}
           onChange={handleTableChange}
