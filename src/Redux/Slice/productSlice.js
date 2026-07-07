@@ -14,7 +14,6 @@ export const addProduct = createAsyncThunk(
       const response = await axiosInstance.post("/", productData, {
         params: { endpoint: "/Product/Product-Post" },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
@@ -30,7 +29,6 @@ export const updateProduct = createAsyncThunk(
   async (productData, { rejectWithValue }) => {
     try {
       const { Productid, ...restData } = productData;
-
       const response = await axiosInstance.post("/", restData, {
         params: { endpoint: `/Product/Product_Put/${Productid}` },
         headers: {
@@ -38,7 +36,6 @@ export const updateProduct = createAsyncThunk(
           "Content-Type": "application/json",
         },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
@@ -56,14 +53,12 @@ export const updateProductImage = createAsyncThunk(
       const formData = new FormData();
       formData.append("ProductId", productID);
       formData.append("ImageName", imageFile);
-
       const response = await axiosInstance.post("/", formData, {
         params: { endpoint: "/Product/Product-Image-Edit" },
         headers: {
           "Content-Type": "multipart/form-data",
         },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
@@ -81,9 +76,7 @@ export const fetchAllProducts = createAsyncThunk(
       const response = await axiosInstance.get("/", {
         params: { endpoint: "/Product/Product-Get" },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       return products.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
@@ -103,13 +96,10 @@ export const fetchProducts = createAsyncThunk(
       const response = await axiosInstance.get("/", {
         params: { endpoint: "/Product/Product-Get" },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const filteredProducts = products
         .filter((product) => product.status == 1)
         .sort((a, b) => new Date(b.dateCreated) - new Date(a.dateCreated));
-
       return filteredProducts;
     } catch (error) {
       return rejectWithValue(
@@ -127,14 +117,11 @@ export const fetchProduct = createAsyncThunk(
       const response = await axiosInstance.get("/", {
         params: { endpoint: "/Product/Product-Get" },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const filteredProducts = products
         .filter((product) => product.status == 1)
         .sort((a, b) => new Date(b.dateCreated) - new Date(a.dateCreated))
         .slice(0, 24);
-
       return filteredProducts;
     } catch (error) {
       return rejectWithValue(
@@ -156,25 +143,22 @@ export const fetchPaginatedProducts = createAsyncThunk(
           PageSize: pageSize,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const validProducts = products.filter(
         (p) => new Date(p.dateCreated).getFullYear() > 2000
       );
-
       const invalidProducts = products.filter(
         (p) => new Date(p.dateCreated).getFullYear() <= 2000
       );
-
       const sortedValid = validProducts.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
-
       return [...sortedValid, ...invalidProducts];
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || error.message || "Failed to fetch paginated products"
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch paginated products"
       );
     }
   }
@@ -193,13 +177,10 @@ export const fetchPaginatedProductsByShowroom = createAsyncThunk(
           PageSize: pageSize,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const sorted = products.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
-
       return { showroomCode, products: sorted };
     } catch (error) {
       return rejectWithValue(
@@ -221,9 +202,7 @@ export const fetchProductsByCategory = createAsyncThunk(
           endpoint: `/Product/Product-Get-by-Category/${categoryId}`,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       return { categoryId, products };
     } catch (error) {
       return rejectWithValue(
@@ -245,15 +224,15 @@ export const fetchProductsByBrand = createAsyncThunk(
           endpoint: `/Product/Product-Get-by-Brand/${brandId}`,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       return products.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || error.message || "Failed to fetch products by brand"
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch products by brand"
       );
     }
   }
@@ -269,13 +248,10 @@ export const fetchProductsByShowroom = createAsyncThunk(
           endpoint: `/Product/Product-Get-by-ShowRoom/${showRoomID}`,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const sortedProducts = products.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
-
       return { showRoomID, products: sortedProducts };
     } catch (error) {
       return rejectWithValue(
@@ -297,7 +273,6 @@ export const fetchProductById = createAsyncThunk(
           endpoint: `/Product/Product-Get-by-Product_ID/${productId}`,
         },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
@@ -317,11 +292,12 @@ export const fetchActiveProducts = createAsyncThunk(
           endpoint: "/Product/Product-Get-Active",
         },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || error.message || "Failed to fetch active products"
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch active products"
       );
     }
   }
@@ -337,7 +313,6 @@ export const fetchInactiveProducts = createAsyncThunk(
           endpoint: "/Product/Product-Get-0",
         },
       });
-
       return response.data;
     } catch (error) {
       return rejectWithValue(
@@ -361,13 +336,10 @@ export const fetchProductByShowroomAndRecord = createAsyncThunk(
           RecordNumber: recordNumber,
         },
       });
-
       const products = Array.isArray(response.data) ? response.data : [];
-
       const sortedProducts = products.sort(
         (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
       );
-
       return { showRoomCode, products: sortedProducts };
     } catch (error) {
       return rejectWithValue(
@@ -379,6 +351,173 @@ export const fetchProductByShowroomAndRecord = createAsyncThunk(
   }
 );
 
+/* ===========================
+   NEW VARIANT ASYNC THUNKS
+=========================== */
+
+/* ===========================
+   NEW VARIANT ASYNC THUNKS
+=========================== */
+
+// Fetch Products Without Variants
+export const fetchProductsWithoutVariants = createAsyncThunk(
+  "products/fetchProductsWithoutVariants",
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.get("/", {
+        params: { endpoint: "/Product/GetProductsWithoutVariants" },
+      });
+
+      const products = Array.isArray(response.data) ? response.data : [];
+      return products.sort(
+        (a, b) => new Date(b.dateCreated) - new Date(a.dateCreated)
+      );
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch products without variants"
+      );
+    }
+  }
+);
+
+// Create Product Variant And Merge
+export const createProductVariantAndMerge = createAsyncThunk(
+  "products/createProductVariantAndMerge",
+  async (variantData, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.post("/", variantData, {
+        params: { endpoint: "/Product/CreateProductVariantAndMerge" },
+        headers: {
+          accept: "text/plain",
+          "Content-Type": "application/json",
+        },
+      });
+
+      // Return the new variants too so the slice can merge them locally
+      return {
+        ctP002ProductId: variantData.ctP002ProductId,
+        createdVariants: Array.isArray(variantData.variants) ? variantData.variants : [],
+        raw: response.data,
+      };
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data ||
+          error.message ||
+          "Failed to create product variant and merge"
+      );
+    }
+  }
+);
+
+// Fetch CTP002 Product Variants By ctp002ProductId
+export const fetchCTP002ProductVariants = createAsyncThunk(
+  "products/fetchCTP002ProductVariants",
+  async (ctp002ProductId, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.get("/", {
+        params: {
+          endpoint: `/Product/GetCTP002ProductVariants/${ctp002ProductId}`,
+        },
+      });
+
+      // Some APIs return { data: [...] } or { variants: [...] } — handle both
+      const variants = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.data)
+        ? response.data.data
+        : Array.isArray(response.data?.variants)
+        ? response.data.variants
+        : [];
+
+      return { ctp002ProductId, variants };
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch CTP002 product variants"
+      );
+    }
+  }
+);
+
+// Fetch Multiple CTP002 Product Variants (note: name aligned with your code)
+export const fetchMultipleCTP002ProductVariants = createAsyncThunk(
+  "products/fetchMultipleCTP002ProductVariants",
+  async (ctp002ProductIds, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.post("/", ctp002ProductIds, {
+        params: { endpoint: "/Product/GetMultiplyCTP002ProductVariants" },
+        headers: {
+          accept: "text/plain",
+          "Content-Type": "application/json",
+        },
+      });
+
+      // Some APIs return an object keyed by id, others return an array
+      let variants = [];
+      if (Array.isArray(response.data)) {
+        variants = response.data;
+      } else if (response.data && typeof response.data === "object") {
+        // Flatten the response object into a single array, tagging with parentId
+        const all = [];
+        Object.entries(response.data).forEach(([parentId, list]) => {
+          if (Array.isArray(list)) {
+            list.forEach((v) => all.push({ ...v, _parentId: parentId }));
+          }
+        });
+        variants = all;
+      }
+
+      return { ctp002ProductIds, variants };
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch multiple CTP002 product variants"
+      );
+    }
+  }
+);
+
+// Fetch All CTP002 Product Variants
+export const fetchAllCTP002ProductVariants = createAsyncThunk(
+  "products/fetchAllCTP002ProductVariants",
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.get("/", {
+        params: { endpoint: "/Product/GetAllCTP002ProductVariants" },
+      });
+
+      // Normalize response shape
+      let variants = [];
+      if (Array.isArray(response.data)) {
+        variants = response.data;
+      } else if (Array.isArray(response.data?.data)) {
+        variants = response.data.data;
+      } else if (Array.isArray(response.data?.variants)) {
+        variants = response.data.variants;
+      } else if (response.data && typeof response.data === "object") {
+        const all = [];
+        Object.entries(response.data).forEach(([parentId, list]) => {
+          if (Array.isArray(list)) {
+            list.forEach((v) => all.push({ ...v, _parentId: parentId }));
+          }
+        });
+        variants = all;
+      }
+
+      return variants;
+    } catch (error) {
+      return rejectWithValue(
+        error.response?.data ||
+          error.message ||
+          "Failed to fetch all CTP002 product variants"
+      );
+    }
+  }
+);
 /* ===========================
    SLICE
 =========================== */
@@ -396,6 +535,14 @@ const productSlice = createSlice({
     currentProduct: null,
     activeProducts: [],
     inactiveProducts: [],
+
+    // Variant-related state
+    productsWithoutVariants: [],
+    productVariants: {},          // keyed by ctp002ProductId
+    multipleProductVariants: [],
+    allProductVariants: [],
+    variantMergeResult: null,
+
     loading: false,
     error: null,
   },
@@ -420,10 +567,24 @@ const productSlice = createSlice({
     clearCurrentProduct: (state) => {
       state.currentProduct = null;
     },
+
+    clearVariantMergeResult: (state) => {
+      state.variantMergeResult = null;
+    },
+
+    clearProductVariants: (state) => {
+      state.productVariants = {};
+      state.multipleProductVariants = [];
+      state.allProductVariants = [];
+    },
   },
 
   extraReducers: (builder) => {
     builder
+      /* ===========================
+         EXISTING THUNKS
+      =========================== */
+
       // Add Product
       .addCase(addProduct.pending, (state) => {
         state.loading = true;
@@ -443,9 +604,7 @@ const productSlice = createSlice({
       })
       .addCase(updateProduct.fulfilled, (state, action) => {
         state.loading = false;
-
         const updatedProduct = action.payload;
-
         const index = state.products.findIndex(
           (item) =>
             item.Productid == updatedProduct.productID ||
@@ -453,7 +612,6 @@ const productSlice = createSlice({
             item.Productid == updatedProduct.Productid ||
             item.productID == updatedProduct.Productid
         );
-
         if (index !== -1) {
           state.products[index] = updatedProduct;
         }
@@ -469,9 +627,7 @@ const productSlice = createSlice({
       })
       .addCase(updateProductImage.fulfilled, (state, action) => {
         state.loading = false;
-
         const updatedProduct = action.payload;
-
         const index = state.products.findIndex(
           (item) =>
             item.Productid === updatedProduct.Productid ||
@@ -479,7 +635,6 @@ const productSlice = createSlice({
             item.Productid === updatedProduct.productID ||
             item.productID === updatedProduct.Productid
         );
-
         if (index !== -1) {
           state.products[index] = updatedProduct;
         }
@@ -502,7 +657,7 @@ const productSlice = createSlice({
         state.error = action.payload || action.error.message;
       })
 
-      // Fetch Products
+      // Fetch Products (active only)
       .addCase(fetchProducts.pending, (state) => {
         state.loading = true;
       })
@@ -561,7 +716,6 @@ const productSlice = createSlice({
       })
       .addCase(fetchProductsByShowroom.fulfilled, (state, action) => {
         state.loading = false;
-
         const { showRoomID, products } = action.payload;
         state.productsByShowroom[showRoomID] = products;
       })
@@ -603,7 +757,6 @@ const productSlice = createSlice({
       })
       .addCase(fetchPaginatedProductsByShowroom.fulfilled, (state, action) => {
         state.loading = false;
-
         const { showroomCode, products } = action.payload;
         state.productsByShowroom[showroomCode] = products;
       })
@@ -644,15 +797,120 @@ const productSlice = createSlice({
       })
       .addCase(fetchProductByShowroomAndRecord.fulfilled, (state, action) => {
         state.loading = false;
-
         const { showRoomCode, products } = action.payload;
         state.productsByShowroom[showRoomCode] = products;
       })
       .addCase(fetchProductByShowroomAndRecord.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload || action.error.message;
+      })
+
+      /* ===========================
+         NEW VARIANT THUNKS
+      =========================== */
+
+      
+    // Fetch Products Without Variants
+    .addCase(fetchProductsWithoutVariants.pending, (state) => {
+      state.loading = true;
+    })
+    .addCase(fetchProductsWithoutVariants.fulfilled, (state, action) => {
+      state.loading = false;
+      state.productsWithoutVariants = action.payload;
+    })
+    .addCase(fetchProductsWithoutVariants.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload || action.error.message;
+    })
+
+    // Create Product Variant And Merge — optimistically append to ctp002ProductVariants
+    .addCase(createProductVariantAndMerge.pending, (state) => {
+      state.loading = true;
+    })
+    .addCase(createProductVariantAndMerge.fulfilled, (state, action) => {
+      state.loading = false;
+      const { ctP002ProductId, createdVariants } = action.payload;
+      if (ctP002ProductId && createdVariants.length) {
+        const existing = state.ctp002ProductVariants[ctP002ProductId] || [];
+        state.ctp002ProductVariants[ctP002ProductId] = [
+          ...existing,
+          ...createdVariants,
+        ];
+      }
+    })
+    .addCase(createProductVariantAndMerge.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload || action.error.message;
+    })
+
+    // Fetch CTP002 Product Variants
+    .addCase(fetchCTP002ProductVariants.pending, (state) => {
+      state.loading = true;
+    })
+    .addCase(fetchCTP002ProductVariants.fulfilled, (state, action) => {
+      state.loading = false;
+      state.ctp002ProductVariants[action.payload.ctp002ProductId] =
+        action.payload.variants;
+    })
+    .addCase(fetchCTP002ProductVariants.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload || action.error.message;
+    })
+
+    // Fetch Multiple CTP002 Product Variants
+    .addCase(fetchMultipleCTP002ProductVariants.pending, (state) => {
+      state.loading = true;
+    })
+    .addCase(fetchMultipleCTP002ProductVariants.fulfilled, (state, action) => {
+      state.loading = false;
+      const { ctp002ProductIds, variants } = action.payload;
+      // Group variants by parentId and merge into state
+      const byParent = {};
+      variants.forEach((v) => {
+        const pid = v._parentId || v.ctP002ProductId || v.CTP002ProductId;
+        if (!pid) return;
+        if (!byParent[pid]) byParent[pid] = [];
+        byParent[pid].push(v);
       });
-  },
+      // If _parentId is missing but we have an array of ids, fall back
+      if (Object.keys(byParent).length === 0 && Array.isArray(variants) && Array.isArray(ctp002ProductIds)) {
+        // Assume single-group: distribute equally (best effort)
+        // (Most APIs tag with parentId already)
+      }
+      Object.entries(byParent).forEach(([pid, list]) => {
+        const existing = state.ctp002ProductVariants[pid] || [];
+        state.ctp002ProductVariants[pid] = [...existing, ...list];
+      });
+    })
+    .addCase(fetchMultipleCTP002ProductVariants.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload || action.error.message;
+    })
+
+    // Fetch All CTP002 Product Variants
+    .addCase(fetchAllCTP002ProductVariants.pending, (state) => {
+      state.loading = true;
+    })
+    .addCase(fetchAllCTP002ProductVariants.fulfilled, (state, action) => {
+      state.loading = false;
+      state.allCTP002ProductVariants = action.payload;
+      // Also build a map keyed by parent id for fast lookup
+      const map = {};
+      action.payload.forEach((v) => {
+        const pid =
+          v.ctP002ProductId || v.CTP002ProductId || v.ctp002ProductId || v._parentId;
+        if (!pid) return;
+        if (!map[pid]) map[pid] = [];
+        map[pid].push(v);
+      });
+      state.ctp002ProductVariants = { ...state.ctp002ProductVariants, ...map };
+    })
+    .addCase(fetchAllCTP002ProductVariants.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload || action.error.message;
+    });
+},
+
 });
 
 export const {
@@ -660,6 +918,8 @@ export const {
   setPage,
   clearCurrentProduct,
   resetProducts,
+  clearVariantMergeResult,
+  clearProductVariants,
 } = productSlice.actions;
 
 export default productSlice.reducer;

@@ -524,7 +524,7 @@ const getInitialError = () => ({
 
 const initialState = {
   ctp001Products: [],
-  ctp001Pagination: { pageNumber: 1, recordPerPage: 500, total: 0 },
+  ctp001Pagination: { pageNumber: 1, recordPerPage: 50, total: 0 },
   mergedProducts: [],
   ctp001MergedProducts: [],
   mergedProductMap: {},
