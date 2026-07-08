@@ -385,24 +385,31 @@ const sorted = [...filtered].sort((a, b) => {
     [dispatch]
   );
 
-  const handleAddVariantToExisting = useCallback(
-    async (ctP001ProductId, name, color, size, imageUrl) => {
-      if (!selectedProductForVariants) return;
+ const handleAddVariantToExisting = useCallback(
+  async (ctP001ProductId, name, color, size, imageUrl) => {
+    if (!selectedProductForVariants) return;
 
-      const ctP002ProductId = getProductId2(selectedProductForVariants);
+    const ctP002ProductId = getProductId2(selectedProductForVariants);
+    if (!ctP002ProductId) {
+      message.error("Parent product has no CTP002 id.");
+      return;
+    }
 
-      const payload = {
-        ctP002ProductId,
-        variants: [
-          {
-            ctP001ProductId,
-            name: name || "",
-            color: color || "",
-            size: size || "",
-            imageUrl: imageUrl || "",
-          },
-        ],
-      };
+    const payload = {
+      ctP002ProductId,
+      variants: [
+        {
+          ctP001ProductId,
+          name: name || "",
+          color: color || "",
+          size: size || "",
+          imageUrl: imageUrl || "",
+          createdAt: new Date().toISOString(), // ← ADD THIS
+        },
+      ],
+    };
+
+
 
       try {
         await dispatch(createProductVariantAndMerge(payload)).unwrap();
@@ -553,27 +560,7 @@ const sorted = [...filtered].sort((a, b) => {
           </div>
         ),
       },
-      {
-        title: "Variants",
-        key: "variants",
-        width: 130,
-        render: (_, record) => {
-          const productId2 = getProductId2(record);
-          const count = variantCountByProductId2[productId2] || 0;
-          return (
-            <Tooltip title="Manage Variants">
-              <Tag
-                color={count > 0 ? "purple" : "default"}
-                style={{ cursor: "pointer" }}
-                icon={<BranchesOutlined />}
-                onClick={() => handleManageVariants(record)}
-              >
-                {count} variant{count === 1 ? "" : "s"}
-              </Tag>
-            </Tooltip>
-          );
-        },
-      },
+      
       {
         title: "Price",
         key: "price",
@@ -672,13 +659,7 @@ const sorted = [...filtered].sort((a, b) => {
                 onClick={() => handleUpdateProductImage(record)}
               />
             </Tooltip>
-            <Tooltip title="Manage Variants">
-              <Button
-                type="text"
-                icon={<BranchesOutlined />}
-                onClick={() => handleManageVariants(record)}
-              />
-            </Tooltip>
+           
             <Tooltip title="View Details">
               <Button
                 type="text"
