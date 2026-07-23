@@ -91,10 +91,11 @@ const UpdateProduct = ({ visible, onClose, product }) => {
         ShowRoomId: product.showRoomId,
         CategoryId: product.categoryId,
         status: product.status?.toString(),
-        tag: product.tag || "",
+        // ✅ Auto-generate if missing or empty
+        tag: product.tag || generate8DigitCode(),
         productColor: product.productColor || "",
-        ProductId2: product.ProductId2 || product.productId2 || "",  // ✅ Capital P and I
-        productId3: product.productId3 || "",
+        ProductId2: product.ProductId2 || product.productId2 || generate8DigitCode(),
+        productId3: product.productId3 || generate8DigitCode(),
         quantity: product.quantity || 0,
       };
 
@@ -123,9 +124,10 @@ const UpdateProduct = ({ visible, onClose, product }) => {
       showRoomId: values.ShowRoomId,
       categoryId: values.CategoryId,
       status: values.status === "1" ? "1" : "0",
-      tag: values.tag,
+      // ✅ Auto-generate on submit if still empty
+      tag: values.tag || generate8DigitCode(),
       productColor: values.productColor,
-      ProductId2: values.ProductId2 || generate8DigitCode(),  // ✅ Capital P and I
+      ProductId2: values.ProductId2 || generate8DigitCode(),
       productId3: values.productId3 || generate8DigitCode(),
       quantity: parseInt(values.quantity) || 0,
     };
@@ -146,7 +148,6 @@ const UpdateProduct = ({ visible, onClose, product }) => {
     } catch (err) {
       console.error("❌ Error updating product:", err);
       
-      // Display detailed error message
       if (err?.errors) {
         const errorMessages = Object.entries(err.errors)
           .map(([field, messages]) => `${field}: ${messages.join(', ')}`)
@@ -293,12 +294,12 @@ const UpdateProduct = ({ visible, onClose, product }) => {
           </Col>
 
           <Col span={6}>
+            {/* ✅ Removed required rule since it's auto-generated */}
             <Form.Item
               label="Tag"
               name="tag"
-              rules={[{ required: true, message: "Please input a tag!" }]}
             >
-              <Input placeholder="e.g., Featured, New" size="large" />
+              <Input placeholder="Auto-generated if empty" size="large" />
             </Form.Item>
           </Col>
         </Row>
@@ -306,13 +307,13 @@ const UpdateProduct = ({ visible, onClose, product }) => {
         {/* Product Code (ProductId2), MPN, Status */}
         <Row gutter={16}>
           <Col span={8}>
+            {/* ✅ Removed required rule since it's auto-generated */}
             <Form.Item 
               label="Product Code (ProductId2)" 
               name="ProductId2"  
-              rules={[{ required: true, message: 'Product code is required!' }]}
-              tooltip="This is the unique product code (ProductId2)"
+              tooltip="Auto-generated if empty"
             >
-              <Input placeholder="Enter Product Code" size="large" />
+              <Input placeholder="Auto-generated if empty" size="large" />
             </Form.Item>
           </Col>
 
@@ -320,9 +321,9 @@ const UpdateProduct = ({ visible, onClose, product }) => {
             <Form.Item 
               label="MPN (Product ID 3)" 
               name="productId3"
-              tooltip="Manufacturer Part Number (auto-generated if empty)"
+              tooltip="Auto-generated if empty"
             >
-              <Input placeholder="Enter MPN" size="large" />
+              <Input placeholder="Auto-generated if empty" size="large" />
             </Form.Item>
           </Col>
 
