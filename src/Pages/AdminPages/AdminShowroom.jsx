@@ -35,10 +35,47 @@ import {
   CalendarOutlined,
   BgColorsOutlined,
   ShopOutlined,
-  HomeOutlined
+  HomeOutlined,
+  ReloadOutlined,
+  ClockCircleOutlined
 } from "@ant-design/icons";
 
 const { Title, Text } = Typography;
+
+// ---------------------------------------------------------------------------
+// Auto color helpers — "auto display any color code"
+// ---------------------------------------------------------------------------
+const hslToHex = (h, s, l) => {
+  const sat = s / 100;
+  const lig = l / 100;
+  const a = sat * Math.min(lig, 1 - lig);
+  const k = (n) => (n + h / 30) % 12;
+  const f = (n) => {
+    const c = lig - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`.toUpperCase();
+};
+
+// Pleasant random hex color (well-saturated, readable as a header background).
+const generateRandomColor = () => {
+  const h = Math.floor(Math.random() * 360);
+  const s = 60 + Math.floor(Math.random() * 30); // 60–89%
+  const l = 35 + Math.floor(Math.random() * 25); // 35–59%
+  return hslToHex(h, s, l);
+};
+
+const isHexColor = (value) => /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value || "");
+
+// Native <input type="color"> requires a lowercase #rrggbb value.
+const toPickerValue = (value) => {
+  if (!isHexColor(value)) return "#000000";
+  if (value.length === 4) {
+    const [, r, g, b] = value;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return value.toLowerCase();
+};
 
 const AdminShowroom = () => {
   const dispatch = useDispatch();
@@ -52,10 +89,42 @@ const AdminShowroom = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const showroomsPerPage = 8;
 
+  // Live "today's date & time" clock shown on the page header.
+  const [now, setNow] = useState(dayjs());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(dayjs()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Live form values for the auto-updating preview strip inside the modal.
+  const watchedColor = Form.useWatch("headerColorCode", form);
+  const watchedEnd = Form.useWatch("elaspedTime", form);
+  const watchedName = Form.useWatch("showRoomName", form);
+
   useEffect(() => {
     dispatch(fetchBrands());
     dispatch(fetchShowrooms());
   }, [dispatch]);
+
+  // ---------------------------------------------------------------------------
+  // AUTO-FILL on Create: today's date & time for "Sales End Date & Time"
+  // and an automatically generated header color code.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (modalVisible && !isEditing) {
+      form.resetFields();
+      form.setFieldsValue({
+        elaspedTime: dayjs(),                 // today's date and time
+        headerColorCode: generateRandomColor(), // any color code, auto-displayed
+      });
+    }
+  }, [modalVisible, isEditing, form]);
+
+  // Keep the page number valid when the list shrinks after a refresh.
+  const totalPages = Math.max(1, Math.ceil((showrooms?.length || 0) / showroomsPerPage));
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const onFinish = (values) => {
     const showRoomID = currentShowroom ? currentShowroom.showRoomID : uuidv4();
@@ -111,8 +180,12 @@ const AdminShowroom = () => {
       brandId: showroom.brandId,
       showAtHomePage: showroom.showAtHomePage,
       orderIndex: showroom.orderIndex,
-      headerColorCode: showroom.headerColorCode,
-      elaspedTime: showroom.elaspedTime ? dayjs(showroom.elaspedTime) : null,
+      // Keep the existing values; auto-fill only when missing.
+      headerColorCode: showroom.headerColorCode || generateRandomColor(),
+      elaspedTime:
+        showroom.elaspedTime && dayjs(showroom.elaspedTime).isValid()
+          ? dayjs(showroom.elaspedTime)
+          : dayjs(),
     });
     setIsEditing(true);
     setModalVisible(true);
@@ -126,8 +199,11 @@ const AdminShowroom = () => {
     dispatch(fetchShowrooms());
   };
 
-  const showroomsWithBrandNames = showrooms.map((showroom) => {
-    const brand = brands.find((b) => b.brandId === showroom.brandId);
+  const showroomsList = Array.isArray(showrooms) ? showrooms : [];
+  const brandsList = Array.isArray(brands) ? brands : [];
+
+  const showroomsWithBrandNames = showroomsList.map((showroom) => {
+    const brand = brandsList.find((b) => b.brandId === showroom.brandId);
     return {
       ...showroom,
       brandName: brand ? brand.brandName : "Unknown",
@@ -287,6 +363,9 @@ const AdminShowroom = () => {
     );
   }
 
+  const colorPreview = isHexColor(watchedColor) ? watchedColor : "#9CA3AF";
+  const endPreview = watchedEnd && dayjs(watchedEnd).isValid() ? dayjs(watchedEnd) : null;
+
   return (
     <div className="min-h-screen p-2">
       <div className=" mx-auto">
@@ -309,19 +388,37 @@ const AdminShowroom = () => {
               </Space>
             </Col>
             <Col>
-              <Button
-                type="primary"
-                size="large"
-                icon={<PlusOutlined />}
-                onClick={() => {
-                  setModalVisible(true);
-                  setIsEditing(false);
-                }}
-                className="bg-white text-red-600 border-0 hover:bg-gray-100 shadow-md hover:shadow-lg transition-all duration-200 font-semibold"
-                shape="round"
-              >
-                Add New Showroom
-              </Button>
+              <Space size="middle" align="center">
+                {/* Auto-displayed today's date & time (live clock) */}
+                <div className="px-3 py-2 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                  <div className="flex items-center gap-2 text-gray-600">
+                    <ClockCircleOutlined className="text-green-600" />
+                    <Text className="!text-gray-700 font-semibold">
+                      {now.format("ddd, MMM DD, YYYY")}
+                    </Text>
+                    <Text className="!text-green-600 font-bold tabular-nums">
+                      {now.format("HH:mm:ss")}
+                    </Text>
+                  </div>
+                  <Text type="secondary" className="!text-xs">
+                    Today’s date &amp; time
+                  </Text>
+                </div>
+
+                <Button
+                  type="primary"
+                  size="large"
+                  icon={<PlusOutlined />}
+                  onClick={() => {
+                    setModalVisible(true);
+                    setIsEditing(false);
+                  }}
+                  className="bg-white text-red-600 border-0 hover:bg-gray-100 shadow-md hover:shadow-lg transition-all duration-200 font-semibold"
+                  shape="round"
+                >
+                  Add New Showroom
+                </Button>
+              </Space>
             </Col>
           </Row>
         </Card>
@@ -352,7 +449,7 @@ const AdminShowroom = () => {
             <Card className="text-center border-0 shadow-md hover:shadow-lg transition-shadow duration-200">
               <div className="p-2">
                 <div className="text-2xl font-bold text-green-600">
-                  {brands.length}
+                  {brandsList.length}
                 </div>
                 <Text className="text-gray-600">Total Brands</Text>
               </div>
@@ -454,7 +551,7 @@ const AdminShowroom = () => {
                   option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
                 }
               >
-                {brands.map((brand) => (
+                {brandsList.map((brand) => (
                   <Select.Option key={brand.brandId} value={brand.brandId}>
                     {brand.brandName}
                   </Select.Option>
@@ -514,15 +611,63 @@ const AdminShowroom = () => {
                 <Space>
                   <BgColorsOutlined className="text-green-600" />
                   <span>Header Color Code</span>
+                  <Text type="secondary" className="!text-xs">
+                    (auto-generated — regenerate or pick any color)
+                  </Text>
                 </Space>
               }
               name="headerColorCode"
               rules={[{ required: true, message: "Please input the header color code!" }]}
             >
-              <Input 
-                placeholder="Enter header color code (e.g., #FF5733)" 
+              <Input
+                placeholder="Enter header color code (e.g., #FF5733)"
                 className="rounded-lg"
                 size="large"
+                style={{ fontFamily: "monospace" }}
+                addonBefore={
+                  // Auto-displayed color swatch for the current code
+                  <span
+                    className="inline-block w-5 h-5 rounded-full border"
+                    style={{
+                      backgroundColor: isHexColor(watchedColor) ? watchedColor : "#9CA3AF",
+                      borderColor: "rgba(0,0,0,0.15)",
+                    }}
+                  />
+                }
+                addonAfter={
+                  <Space size={4}>
+                    <Tooltip title="Generate another color">
+                      <Button
+                        htmlType="button"
+                        size="small"
+                        type="text"
+                        icon={<ReloadOutlined />}
+                        onClick={() =>
+                          form.setFieldsValue({ headerColorCode: generateRandomColor() })
+                        }
+                      />
+                    </Tooltip>
+                    <Tooltip title="Pick a color">
+                      <input
+                        type="color"
+                        value={toPickerValue(watchedColor)}
+                        onChange={(e) =>
+                          form.setFieldsValue({
+                            headerColorCode: e.target.value.toUpperCase(),
+                          })
+                        }
+                        style={{
+                          width: 28,
+                          height: 24,
+                          padding: 0,
+                          border: "none",
+                          background: "none",
+                          cursor: "pointer",
+                        }}
+                      />
+                    </Tooltip>
+                  </Space>
+                }
               />
             </Form.Item>
 
@@ -530,7 +675,10 @@ const AdminShowroom = () => {
               label={
                 <Space>
                   <CalendarOutlined className="text-red-600" />
-                  <span>Sales End Date & Time</span>
+                  <span>Sales End Date &amp; Time</span>
+                  <Text type="secondary" className="!text-xs">
+                    (auto-filled with today’s date &amp; time)
+                  </Text>
                 </Space>
               }
               name="elaspedTime"
@@ -541,9 +689,40 @@ const AdminShowroom = () => {
                 format="YYYY-MM-DD HH:mm:ss"
                 className="w-full rounded-lg"
                 size="large"
-                onChange={(_, dateString) => form.setFieldsValue({ elaspedTime: dateString })}
+                placeholder="Select date & time (defaults to now)"
               />
             </Form.Item>
+
+            {/* Live preview — auto-displays the selected color and end date/time */}
+            <div className="mb-4 rounded-lg border border-gray-200 overflow-hidden">
+              <div
+                className="px-4 py-2 font-semibold text-white truncate"
+                style={{ backgroundColor: colorPreview }}
+              >
+                {watchedName || "Showroom Header"} 
+              </div>
+              <div className="px-4 py-2 flex items-center justify-between bg-gray-50">
+                <Space size={8}>
+                  <span
+                    className="inline-block w-4 h-4 rounded-full border"
+                    style={{
+                      backgroundColor: colorPreview,
+                      borderColor: "rgba(0,0,0,0.15)",
+                    }}
+                  />
+                  <Text code className="text-gray-600">
+                    {watchedColor || "—"}
+                  </Text>
+                </Space>
+                <Space size={6}>
+                  <CalendarOutlined className="text-red-600" />
+                  <Text className="text-gray-600">
+                    Sale ends:{" "}
+                    {endPreview ? endPreview.format("MMM DD, YYYY HH:mm:ss") : "—"}
+                  </Text>
+                </Space>
+              </div>
+            </div>
 
             <Form.Item className="mb-0 mt-6">
               <Button 

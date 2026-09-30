@@ -1,6 +1,6 @@
 // src/App.jsx
-import { useEffect, useState } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useState, Suspense, lazy } from "react";
+import { Routes, Route, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useDispatch } from "react-redux";
 
 import { tokenMonitor } from "./services/tokenMonitor";
@@ -11,86 +11,187 @@ import ScrollToTop from "./Pages/ScrollToTop";
 import UserLogin from "./Pages/AdminAuth/UserLogin";
 import AuthGuard from "./Component/AuthGuard";
 
-/* ==================== PAGES ==================== */
-import AdvertisementPage from "./Pages/AdminPages/Advertisement";
+/* ==================== LAYOUTS (eager — the app shell) ====================
+   Layouts stay eager so the shell (sidebar/header) loads once and PERSISTS
+   across in-section navigation. Pages below are lazy-loaded so opening one
+   page downloads just that page instead of the entire application. */
 import AdminPage from "./Pages/AdminPages/AdminPanel";
-import Dashboard from "./Pages/AdminPages/Dashboard";
-import Orders from "./Pages/AdminPages/Orders/Orders";
-import AdminProducts from "./Pages/AdminPages/Products/AdminProducts";
-import Adminbrands from "./Pages/AdminPages/Adminbrands";
-import AdminCategory from "./Pages/AdminPages/AdminCategory";
-import AdminShowroom from "./Pages/AdminPages/AdminShowroom";
-import BranchProductsPage from "./Pages/AdminPages/BranchProductsPage";
-
 import FulfillmentPage from "./Pages/Fulfilments/FulfilmentPage/FulfilmentPage";
-import FulfilmentsDashboard from "./Pages/Fulfilments/FulfilmentPage/FulfilmentsDashboard";
-import FulfilmentsOrder from "./Pages/Fulfilments/FulfilmentPage/FulfilmentsOrder";
-
 import ContentPage from "./Pages/ContentManager/ContentPage";
-import ContentDashboard from "./Pages/ContentManager/ContentManagerPage/ContentDashboard";
-import ContentProduct from "./Pages/ContentManager/ContentManagerPage/ContentProduct";
-import ContentShowroom from "./Pages/ContentManager/ContentManagerPage/ContentShowroom";
-import Contentbrand from "./Pages/ContentManager/ContentManagerPage/Contentbrand";
-import ContentCategory from "./Pages/ContentManager/ContentManagerPage/ContentCategory";
-
-import ContentBanner from "./Pages/ContentManager/ContentManagerPage/ContentBanner";
-
 import DevPage from "./Pages/Developer/DevPage";
-import DevDashboard from "./Pages/Developer/Dev/DevDashboard";
-import DevBrands from "./Pages/Developer/Dev/DevBrands";
-import DevCategory from "./Pages/Developer/Dev/DevCategory";
-import DevProducts from "./Pages/Developer/Dev/DevProducts";
-import DevOrders from "./Pages/Developer/Dev/DevOrders";
-import DevShowroom from "./Pages/Developer/Dev/DevShowroom";
-import DevBanners from "./Pages/Developer/Dev/DevBanners";
-import DevUsers from "./Pages/Developer/Dev/DevUsers";
-
 import DigiPage from "./Pages/DigitalMarketer/DigiPage";
-import DigiOrders from "./Pages/DigitalMarketer/Digi/DigiOrders";
-import DigiProducts from "./Pages/DigitalMarketer/Digi/DigiProducts";
-import CTP001ProductsPage from "./Pages/ContentManager/ContentManagerPage/CTP001ProductsPage";
-import DevCtp001Products from "./Pages/Developer/Dev/DevCtp001Products";
 
-/* ==================== ROUTE CONFIG ==================== */
-const routes = [
-  { path: "/admin/dashboard", layout: AdminPage, page: Dashboard },
-  { path: "/admin/orders", layout: AdminPage, page: Orders },
-  { path: "/admin/products", layout: AdminPage, page: AdminProducts },
-  { path: "/admin/brands", layout: AdminPage, page: Adminbrands },
-  { path: "/admin/categories", layout: AdminPage, page: AdminCategory },
-  { path: "/admin/showroom", layout: AdminPage, page: AdminShowroom },
-  { path: "/admin/banner", layout: AdminPage, page: AdvertisementPage },
-  { path: "/admin/branch-products", layout: AdminPage, page: BranchProductsPage },
+/* ==================== PAGES (lazy — one chunk per page) ==================== */
+const AdvertisementPage = lazy(() => import("./Pages/AdminPages/Advertisement"));
+const Dashboard = lazy(() => import("./Pages/AdminPages/Dashboard"));
+const Orders = lazy(() => import("./Pages/AdminPages/Orders/Orders"));
+const AdminProducts = lazy(() => import("./Pages/AdminPages/Products/AdminProducts"));
+const Adminbrands = lazy(() => import("./Pages/AdminPages/Adminbrands"));
+const AdminCategory = lazy(() => import("./Pages/AdminPages/AdminCategory"));
+const AdminShowroom = lazy(() => import("./Pages/AdminPages/AdminShowroom"));
+const BranchProductsPage = lazy(() => import("./Pages/AdminPages/BranchProductsPage"));
 
-  { path: "/fulfillment/dashboard", layout: FulfillmentPage, page: FulfilmentsDashboard },
-  { path: "/fulfillment/orders", layout: FulfillmentPage, page: FulfilmentsOrder },
+const FulfilmentsDashboard = lazy(() =>
+  import("./Pages/Fulfilments/FulfilmentPage/FulfilmentsDashboard")
+);
+const FulfilmentsOrder = lazy(() =>
+  import("./Pages/Fulfilments/FulfilmentPage/FulfilmentsOrder")
+);
 
-  { path: "/content/dashboard", layout: ContentPage, page: ContentDashboard },
-  { path: "/content/products", layout: ContentPage, page: ContentProduct },
-  { path: "/content/banner", layout: ContentPage, page: ContentBanner },
-  { path: "/content/showroom", layout: ContentPage, page: ContentShowroom },
-  { path: "/content/brands", layout: ContentPage, page: Contentbrand },
-  { path: "/content/category", layout: ContentPage, page: ContentCategory },
+const ContentDashboard = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/ContentDashboard")
+);
+const ContentProduct = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/ContentProduct")
+);
+const ContentShowroom = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/ContentShowroom")
+);
+const Contentbrand = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/Contentbrand")
+);
+const ContentCategory = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/ContentCategory")
+);
+const ContentBanner = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/ContentBanner")
+);
+const CTP001ProductsPage = lazy(() =>
+  import("./Pages/ContentManager/ContentManagerPage/CTP001ProductsPage")
+);
 
-  { path: "/content/ctp001-products", layout: ContentPage, page: CTP001ProductsPage },
+const DevDashboard = lazy(() => import("./Pages/Developer/Dev/DevDashboard"));
+const DevBrands = lazy(() => import("./Pages/Developer/Dev/DevBrands"));
+const DevCategory = lazy(() => import("./Pages/Developer/Dev/DevCategory"));
+const DevProducts = lazy(() => import("./Pages/Developer/Dev/DevProducts"));
+const DevOrders = lazy(() => import("./Pages/Developer/Dev/DevOrders"));
+const DevShowroom = lazy(() => import("./Pages/Developer/Dev/DevShowroom"));
+const DevBanners = lazy(() => import("./Pages/Developer/Dev/DevBanners"));
+const DevUsers = lazy(() => import("./Pages/Developer/Dev/DevUsers"));
+const DevCtp001Products = lazy(() => import("./Pages/Developer/Dev/DevCtp001Products"));
 
-  { path: "/dev/dashboard", layout: DevPage, page: DevDashboard },
-  { path: "/dev/brands", layout: DevPage, page: DevBrands },
-  { path: "/dev/categories", layout: DevPage, page: DevCategory },
-  { path: "/dev/products", layout: DevPage, page: DevProducts },
-  { path: "/dev/orders", layout: DevPage, page: DevOrders },
-  { path: "/dev/showroom", layout: DevPage, page: DevShowroom },
-  { path: "/dev/banner", layout: DevPage, page: DevBanners },
-  { path: "/dev/users", layout: DevPage, page: DevUsers },
-  { path: "/dev/ctp001-products", layout: DevPage, page: DevCtp001Products },
-  { path: "/digi/orders", layout: DigiPage, page: DigiOrders },
-  { path: "/digi/products", layout: DigiPage, page: DigiProducts },
+const DigiOrders = lazy(() => import("./Pages/DigitalMarketer/Digi/DigiOrders"));
+const DigiProducts = lazy(() => import("./Pages/DigitalMarketer/Digi/DigiProducts"));
+
+/* ==================== SECTION / ROUTE CONFIG ====================
+   Each section is ONE parent route: the layout wraps an <Outlet/> and stays
+   mounted while only the child page changes. `index` is the page shown when
+   the bare section URL is opened (e.g. /admin -> /admin/dashboard).
+   IMPORTANT: layouts receive <Outlet/> as `children`, so they work unchanged
+   as long as they render {children} normally. */
+const sections = [
+  {
+    path: "/admin",
+    layout: AdminPage,
+    index: "dashboard",
+    pages: [
+      { path: "dashboard", page: Dashboard },
+      { path: "orders", page: Orders },
+      { path: "products", page: AdminProducts },
+      { path: "brands", page: Adminbrands },
+      { path: "categories", page: AdminCategory },
+      { path: "showroom", page: AdminShowroom },
+      { path: "banner", page: AdvertisementPage },
+      { path: "branch-products", page: BranchProductsPage },
+    ],
+  },
+  {
+    path: "/fulfillment",
+    layout: FulfillmentPage,
+    index: "dashboard",
+    pages: [
+      { path: "dashboard", page: FulfilmentsDashboard },
+      { path: "orders", page: FulfilmentsOrder },
+    ],
+  },
+  {
+    path: "/content",
+    layout: ContentPage,
+    index: "dashboard",
+    pages: [
+      { path: "dashboard", page: ContentDashboard },
+      { path: "products", page: ContentProduct },
+      { path: "banner", page: ContentBanner },
+      { path: "showroom", page: ContentShowroom },
+      { path: "brands", page: Contentbrand },
+      { path: "category", page: ContentCategory },
+      { path: "ctp001-products", page: CTP001ProductsPage },
+    ],
+  },
+  {
+    path: "/dev",
+    layout: DevPage,
+    index: "dashboard",
+    pages: [
+      { path: "dashboard", page: DevDashboard },
+      { path: "brands", page: DevBrands },
+      { path: "categories", page: DevCategory },
+      { path: "products", page: DevProducts },
+      { path: "orders", page: DevOrders },
+      { path: "showroom", page: DevShowroom },
+      { path: "banner", page: DevBanners },
+      { path: "users", page: DevUsers },
+      { path: "ctp001-products", page: DevCtp001Products },
+    ],
+  },
+  {
+    path: "/digi",
+    layout: DigiPage,
+    index: "orders",
+    pages: [
+      { path: "orders", page: DigiOrders },
+      { path: "products", page: DigiProducts },
+    ],
+  },
 ];
+
+/* Small self-contained loader (no UI-framework dependency) */
+const PageLoader = ({ label = "Loading page..." }) => (
+  <div
+    style={{
+      minHeight: 240,
+      display: "flex",
+      flexDirection: "column",
+      gap: 12,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 48,
+    }}
+  >
+    <style>{`@keyframes app-spin { to { transform: rotate(360deg); } }`}</style>
+    <div
+      style={{
+        width: 42,
+        height: 42,
+        border: "4px solid #e5e7eb",
+        borderTopColor: "#16a34a",
+        borderRadius: "50%",
+        animation: "app-spin 0.8s linear infinite",
+      }}
+    />
+    <span style={{ color: "#6b7280", fontSize: 14 }}>{label}</span>
+  </div>
+);
+
+/* Sends a user to login while REMEMBERING where they were trying to go, so
+   after authentication they can be returned to that page instead of the
+   dashboard (see FIX-NOTES.md). */
+const RedirectToLogin = () => {
+  const location = useLocation();
+  return (
+    <Navigate
+      to="/admin/login"
+      state={{ from: location }}
+      replace
+    />
+  );
+};
 
 /* ==================== APP COMPONENT ==================== */
 function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const dispatch = useDispatch();
+  const location = useLocation();
 
   /* Initialize Token Monitor */
   useEffect(() => {
@@ -132,26 +233,36 @@ function App() {
       <ScrollToTop />
       <Routes>
         {/* Public Routes - NO AuthGuard */}
-        <Route path="/" element={<Navigate to="/admin/login" replace />} />
+        <Route path="/" element={<RedirectToLogin />} />
         <Route path="/admin/login" element={<UserLogin />} />
 
-        {/* Protected Routes - WITH AuthGuard */}
-        {routes.map(({ path, layout: Layout, page: Page }) => (
+        {/* Protected Sections — layout stays mounted; only the page changes */}
+        {sections.map(({ path, layout: Layout, index, pages }) => (
           <Route
             key={path}
             path={path}
             element={
               <AuthGuard>
                 <Layout>
-                  <Page />
+                  {/* Suspense INSIDE the layout: a slow page chunk shows the
+                      loader in the content area while the shell stays put. */}
+                  <Suspense fallback={<PageLoader />}>
+                    <Outlet />
+                  </Suspense>
                 </Layout>
               </AuthGuard>
             }
-          />
+          >
+            {/* Bare section URL -> its default page */}
+            <Route index element={<Navigate to={index} replace />} />
+            {pages.map(({ path: pagePath, page: Page }) => (
+              <Route key={pagePath} path={pagePath} element={<Page />} />
+            ))}
+          </Route>
         ))}
 
-        {/* Catch-all */}
-        <Route path="*" element={<Navigate to="/admin/login" replace />} />
+        {/* Catch-all — remembers the attempted URL for post-login return */}
+        <Route path="*" element={<RedirectToLogin />} />
       </Routes>
     </>
   );

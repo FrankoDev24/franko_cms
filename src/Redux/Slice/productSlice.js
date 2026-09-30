@@ -165,6 +165,10 @@ export const fetchProductsByShowroom = createAsyncThunk(
   }
 );
 
+/* ==========================================================================
+   Product-Get-by-Product_ID/{Code}  — fetch ONE product by its product ID.
+   Used by the Products page "View Details" modal to load the fresh record.
+   ========================================================================== */
 export const fetchProductById = createAsyncThunk(
   "products/fetchProductById",
   async (productId, { rejectWithValue }) => {
@@ -320,6 +324,125 @@ export const fetchAllCTP002ProductVariants = createAsyncThunk(
   }
 );
 
+/* ==========================================================================
+   PRODUCT IMAGES
+   ------------------------------------------------
+   GET    /Product/GetProductImages/{Code}     — list a product's images
+   POST   /Product/AddProductImages/{Code}     — upload one or more images
+   POST   /Product/DeleteProductImage/{Code}   — delete one image
+   ------------------------------------------------
+   `{Code}` is the PRODUCT ID (same value Product-Get-by-Product_ID/{Code}
+   accepts — see getProductId()/resolveProductCode() in the UI). If your API
+   keys images by the ProductId2 business code instead, change the code value
+   passed by the UI (documented in CHANGES.md).
+   ========================================================================== */
+
+// Multipart field name for uploaded image files. The existing
+// /Product/Product-Image-Edit endpoint binds its file as "ImageName", so the
+// same name is used here. If AddProductImages expects e.g. "Files" /
+// "ImageFiles", change this one constant.
+export const IMAGE_FILE_FIELD = "ImageName";
+
+// Normalize the various shapes GetProductImages/AddProductImages may return
+// (["a.jpg", ...] | [{imageName|fileName|url|...}, ...] | wrapped {data|images})
+// into plain objects: { id, imageName, imageUrl, raw }.
+export const toImageArray = (payload) => {
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload?.images)
+        ? payload.images
+        : [];
+
+  return list.map((item, index) => {
+    if (item == null) return null;
+    if (typeof item === "string") {
+      return {
+        id: item,
+        imageName: item,
+        imageUrl: null,
+        raw: item,
+        key: item || `img-${index}`,
+      };
+    }
+    const imageName =
+      item.imageName || item.ImageName || item.fileName || item.FileName ||
+      item.name || item.Name || "";
+    const imageUrl =
+      item.imageUrl || item.ImageUrl || item.url || item.Url || null;
+    const id =
+      item.id || item.Id || item.imageID || item.ImageID ||
+      item.imageCode || item.ImageCode || imageName || `img-${index}`;
+    return {
+      id,
+      imageName,
+      imageUrl,
+      raw: item,
+      key: String(id),
+    };
+  }).filter(Boolean);
+};
+
+export const fetchProductImages = createAsyncThunk(
+  "products/fetchProductImages",
+  async (code, { rejectWithValue }) => {
+    try {
+      const response = await axiosInstance.get("/", {
+        params: { endpoint: `/Product/GetProductImages/${code}` },
+      });
+      return { code, images: toImageArray(response.data) };
+    } catch (error) {
+      return rejectWithValue(error.response?.data || error.message || "Failed to fetch product images");
+    }
+  }
+);
+
+export const addProductImages = createAsyncThunk(
+  "products/addProductImages",
+  async ({ code, imageFiles }, { rejectWithValue }) => {
+    try {
+      const files = (Array.isArray(imageFiles) ? imageFiles : [imageFiles]).filter(Boolean);
+      if (!files.length) {
+        return rejectWithValue("No image files selected");
+      }
+      const formData = new FormData();
+      files.forEach((file) => formData.append(IMAGE_FILE_FIELD, file));
+      const response = await axiosInstance.post("/", formData, {
+        params: { endpoint: `/Product/AddProductImages/${code}` },
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return { code, images: toImageArray(response.data), raw: response.data, count: files.length };
+    } catch (error) {
+      return rejectWithValue(error.response?.data || error.message || "Failed to add product images");
+    }
+  }
+);
+
+export const deleteProductImage = createAsyncThunk(
+  "products/deleteProductImage",
+  async ({ code, imageName, imageId }, { rejectWithValue }) => {
+    try {
+      // The image to delete is identified by its name (and/or id) — sent both
+      // as query params and in the body so either binding style works.
+      const response = await axiosInstance.post(
+        "/",
+        { ImageName: imageName, ImageId: imageId },
+        {
+          params: {
+            endpoint: `/Product/DeleteProductImage/${code}`,
+            ImageName: imageName,
+            ImageId: imageId,
+          },
+        }
+      );
+      return { code, imageName, imageId, raw: response.data };
+    } catch (error) {
+      return rejectWithValue(error.response?.data || error.message || "Failed to delete product image");
+    }
+  }
+);
+
 /* ===========================
    SLICE — FIXED
 =========================== */
@@ -347,6 +470,14 @@ const productSlice = createSlice({
     allProductVariants: [],
     variantMergeResult: null,
 
+    // ✅ NEW: product images (gallery) state — keyed by product code/id.
+    // Separate flags on purpose: these thunks do NOT touch `loading`/
+    // `error` so existing consumers of those fields are unaffected
+    // (same convention as the variant thunks below).
+    productImagesByCode: {},
+    imagesLoading: false,
+    imagesError: null,
+
     loading: false,
     error: null,
   },
@@ -364,6 +495,15 @@ const productSlice = createSlice({
       state.productVariants = {}; state.multipleProductVariants = [];
       state.allProductVariants = []; state.ctp002ProductVariants = {};
       state.allCTP002ProductVariants = [];
+    },
+    // ✅ NEW: clear one product's images (pass a code) or all of them.
+    clearProductImages: (state, action) => {
+      if (action.payload) {
+        delete state.productImagesByCode[action.payload];
+      } else {
+        state.productImagesByCode = {};
+      }
+      state.imagesError = null;
     },
   },
 
@@ -505,13 +645,66 @@ const productSlice = createSlice({
         });
         state.ctp002ProductVariants = { ...state.ctp002ProductVariants, ...map };
       })
-      .addCase(fetchAllCTP002ProductVariants.rejected, () => {});
+      .addCase(fetchAllCTP002ProductVariants.rejected, () => {})
+
+      // ✅ NEW: product images — own flags, never touch state.loading/state.error
+      .addCase(fetchProductImages.pending, (state) => {
+        state.imagesLoading = true;
+        state.imagesError = null;
+      })
+      .addCase(fetchProductImages.fulfilled, (state, action) => {
+        state.imagesLoading = false;
+        state.productImagesByCode[action.payload.code] = action.payload.images;
+      })
+      .addCase(fetchProductImages.rejected, (state, action) => {
+        state.imagesLoading = false;
+        state.imagesError = action.payload || action.error.message;
+      })
+
+      .addCase(addProductImages.pending, (state) => {
+        state.imagesLoading = true;
+        state.imagesError = null;
+      })
+      .addCase(addProductImages.fulfilled, (state, action) => {
+        state.imagesLoading = false;
+        const { code, images } = action.payload;
+        if (Array.isArray(images) && images.length) {
+          state.productImagesByCode[code] = [
+            ...(state.productImagesByCode[code] || []),
+            ...images,
+          ];
+        }
+      })
+      .addCase(addProductImages.rejected, (state, action) => {
+        state.imagesLoading = false;
+        state.imagesError = action.payload || action.error.message;
+      })
+
+      .addCase(deleteProductImage.pending, (state) => {
+        state.imagesLoading = true;
+        state.imagesError = null;
+      })
+      .addCase(deleteProductImage.fulfilled, (state, action) => {
+        state.imagesLoading = false;
+        const { code, imageName, imageId } = action.payload;
+        const list = state.productImagesByCode[code] || [];
+        state.productImagesByCode[code] = list.filter((img) => {
+          const idMatch = imageId != null && String(img.id) === String(imageId);
+          const nameMatch = !!imageName && img.imageName === imageName;
+          return !idMatch && !nameMatch;
+        });
+      })
+      .addCase(deleteProductImage.rejected, (state, action) => {
+        state.imagesLoading = false;
+        state.imagesError = action.payload || action.error.message;
+      });
   },
 });
 
 export const {
   clearProducts, setPage, clearCurrentProduct,
   resetProducts, clearVariantMergeResult, clearProductVariants,
+  clearProductImages,
 } = productSlice.actions;
 
 export default productSlice.reducer;

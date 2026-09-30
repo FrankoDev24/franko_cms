@@ -10,6 +10,90 @@ const toErrorPayload = (error, fallback) => {
   return server || error.message || fallback;
 };
 
+// Normalize any API payload into a plain array of orders.
+// The endpoint does not always return a bare array (see DIAGNOSIS.md §3.4):
+// it may wrap results ({ data: [...] } / { orders: [...] }), return a single
+// order object, or return null/undefined on an empty 200 response.
+export const toOrderArray = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.orders)) return payload.orders;
+  if (Array.isArray(payload?.result)) return payload.result;
+  if (
+    payload &&
+    typeof payload === "object" &&
+    (payload.orderCode || payload.OrderCode || payload._id)
+  ) {
+    return [payload];
+  }
+  return [];
+};
+
+// Unwrap a single-object payload that may be nested under data/result.
+const unwrap = (payload) => payload?.data ?? payload?.result ?? payload;
+
+// ---------------------------------------------------------------------------
+// Loading / error COMPATIBILITY LAYER
+//
+// Consumers (OrderDetailsModal, CycleUpdateModal, checkout screens, ...)
+// historically treat `state.loading` / `state.error` as plain booleans:
+//
+//   if (loading) return null;                 // or <Spinner/>
+//   disabled={loading}
+//   if (error) show error
+//
+// To keep every one of those consumers working while still exposing
+// per-domain flags (loading.orders, loading.salesOrder, ...):
+//
+//   • when NOTHING is active:  state.loading === false, state.error === null
+//   • when something IS active: they become objects with per-domain keys
+//
+// This is why the details modal went blank when `loading` became a stable
+// always-truthy object: `if (loading) return null` never rendered content
+// (DIAGNOSIS.md §9).
+//
+// NEVER assign to state.loading / state.error directly — always go through
+// setLoadingFlag / setErrorFlag so the idle value stays falsy and immer never
+// sees `false.orders = true` (which throws).
+// ---------------------------------------------------------------------------
+const setLoadingFlag = (state, key, value) => {
+  const current =
+    state.loading && typeof state.loading === "object"
+      ? state.loading
+      : { ...initialLoading };
+  const next = { ...current, [key]: value };
+  state.loading = Object.values(next).some(Boolean) ? next : false;
+};
+
+const setErrorFlag = (state, key, value) => {
+  const current =
+    state.error && typeof state.error === "object"
+      ? state.error
+      : { ...initialError };
+  const next = { ...current, [key]: value };
+  state.error = Object.values(next).some((v) => v != null) ? next : null;
+};
+
+const initialLoading = {
+  orders: false,
+  salesOrder: false,
+  checkout: false,
+  transition: false,
+  lifeCycle: false,
+  deliveryAddress: false,
+  deliveryUpdate: false,
+};
+
+const initialError = {
+  orders: null,
+  salesOrder: null,
+  checkout: null,
+  transition: null,
+  lifeCycle: null,
+  deliveryAddress: null,
+  deliveryUpdate: null,
+};
+
 // Async thunks
 export const fetchOrdersByDate = createAsyncThunk(
   "orders/fetchOrdersByDate",
@@ -23,7 +107,7 @@ export const fetchOrdersByDate = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch orders by date"
+        toErrorPayload(error, "Failed to fetch orders by date")
       );
     }
   }
@@ -67,7 +151,7 @@ export const fetchOrdersByCustomer = createAsyncThunk(
       return data || [];
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch orders"
+        toErrorPayload(error, "Failed to fetch orders")
       );
     }
   }
@@ -89,7 +173,7 @@ export const fetchOrdersByThirdParty = createAsyncThunk(
       return data || [];
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch orders "
+        toErrorPayload(error, "Failed to fetch orders")
       );
     }
   }
@@ -111,7 +195,7 @@ export const updateOrderTransition = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to update order transition"
+        toErrorPayload(error, "Failed to update order transition")
       );
     }
   }
@@ -129,7 +213,7 @@ export const fetchOrderLifeCycle = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch order lifecycle"
+        toErrorPayload(error, "Failed to fetch order lifecycle")
       );
     }
   }
@@ -147,7 +231,7 @@ export const fetchSalesOrderById = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch sales order"
+        toErrorPayload(error, "Failed to fetch sales order")
       );
     }
   }
@@ -199,7 +283,7 @@ export const orderAddress = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to update order address"
+        toErrorPayload(error, "Failed to update order address")
       );
     }
   }
@@ -217,7 +301,7 @@ export const fetchOrderDeliveryAddress = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(
-        error.response?.data || "Failed to fetch delivery address"
+        toErrorPayload(error, "Failed to fetch delivery address")
       );
     }
   }
@@ -233,20 +317,21 @@ const orderSlice = createSlice({
     deliveryUpdate: null,
     lifeCycle: null,
 
+    // Result of the last CheckOutDbCart call. NOTE: this used to be written
+    // into `state.orders`, which wiped the Orders page list (see DIAGNOSIS.md §5).
+    checkoutResult: null,
+
     checkoutDetails: localStorage.getItem("checkoutDetails") || {},
     orderAddressDetails: localStorage.getItem("orderAddressDetails") || {},
-    loading: {
-      orders: false,
-      deliveryAddress: false,
-      deliveryUpdate: false,
-      lifeCycle: false,
-    },
-    error: {
-      orders: null,
-      deliveryAddress: null,
-      deliveryUpdate: null,
-      lifeCycle: null,
-    },
+
+    // { from, to } of the most recent fetchOrdersByDate request — used by the
+    // UI to explain which window was searched in the empty state.
+    lastFetchMeta: null,
+
+    // Falsy when idle (legacy-compatible), keyed object when active.
+    // See the compatibility layer above.
+    loading: false,
+    error: null,
   },
   reducers: {
     // Clear localStorage and reset state
@@ -282,6 +367,9 @@ const orderSlice = createSlice({
     },
 
     // Store the local order
+    // WARNING: this overwrites `state.orders` (the API-backed list used by the
+    // admin Orders page) with localStorage data. If the two screens share this
+    // slice, move this to a separate `localOrders` key (see DIAGNOSIS.md §5/§7).
     storeLocalOrder: (state, action) => {
       const { userId, orderId } = action.payload;
       const storedOrders =
@@ -302,6 +390,8 @@ const orderSlice = createSlice({
     },
 
     // Fetch orders by user
+    // WARNING: same as storeLocalOrder — writes localStorage data over the
+    // API-backed `state.orders` list (see DIAGNOSIS.md §5/§7).
     fetchOrdersByUser: (state, action) => {
       const userId = action.payload;
       const storedOrders =
@@ -314,84 +404,129 @@ const orderSlice = createSlice({
       state.orders = [];
       state.salesOrder = [];
       state.deliveryAddress = [];
-      state.loading = {
-        orders: false,
-        deliveryAddress: false,
-        deliveryUpdate: false,
-      };
-      state.error = {
-        orders: null,
-        lifeCycle: null,
-        deliveryAddress: null,
-        deliveryUpdate: null,
-      };
+      state.checkoutResult = null;
+      state.lastFetchMeta = null;
+      // Idle values must stay FALSY — a truthy `{...all false}` object keeps
+      // `if (loading) return null` consumers blank forever.
+      state.loading = false;
+      state.error = null;
     },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchOrdersByDate.pending, (state) => {
-        state.loading = true;
+      // -----------------------------------------------------------------
+      // Fetch orders by date (the Orders page list)
+      // -----------------------------------------------------------------
+      .addCase(fetchOrdersByDate.pending, (state, action) => {
+        setLoadingFlag(state, "orders", true);
+        setErrorFlag(state, "orders", null);
+        state.lastFetchMeta = action.meta?.arg ?? null;
       })
       .addCase(fetchOrdersByDate.fulfilled, (state, action) => {
-        state.orders = action.payload;
-        state.loading = false;
+        setLoadingFlag(state, "orders", false);
+        setErrorFlag(state, "orders", null);
+        // Normalize: the endpoint is not guaranteed to return a bare array.
+        state.orders = toOrderArray(action.payload);
       })
-      .addCase(fetchOrdersByDate.rejected, (state) => {
-        state.loading = false;
+      .addCase(fetchOrdersByDate.rejected, (state, action) => {
+        setLoadingFlag(state, "orders", false);
+        // Surface the failure — previously it was swallowed and the UI showed
+        // "No orders found" for what was really a failed request.
+        // Keep the previous `orders` so a refetch failure doesn't blank the list.
+        setErrorFlag(
+          state,
+          "orders",
+          action.payload ||
+            action.error?.message ||
+            "Failed to fetch orders by date"
+        );
       })
+
+      // -----------------------------------------------------------------
+      // Order lifecycle transition (Update Cycle)
+      // -----------------------------------------------------------------
       .addCase(updateOrderTransition.pending, (state) => {
-        state.loading = true;
-        state.error = null;
+        setLoadingFlag(state, "transition", true);
+        setErrorFlag(state, "transition", null);
       })
       .addCase(updateOrderTransition.fulfilled, (state, action) => {
-        state.loading = false;
-        const updatedOrder = action.payload;
+        setLoadingFlag(state, "transition", false);
+        const updatedOrder = unwrap(action.payload) || {};
+        const updatedCode =
+          updatedOrder.orderCode ?? updatedOrder.OrderCode ?? updatedOrder._id;
         const index = state.orders.findIndex(
-          (order) => order.orderCode === updatedOrder.orderCode
+          (order) =>
+            (order.orderCode ?? order.OrderCode ?? order._id) === updatedCode
         );
         if (index !== -1) {
-          state.orders[index] = updatedOrder;
+          state.orders[index] = { ...state.orders[index], ...updatedOrder };
         }
       })
       .addCase(updateOrderTransition.rejected, (state, action) => {
-        state.loading = false;
-        state.error =
-          action.error.message || "Error updating order lifecycle";
+        setLoadingFlag(state, "transition", false);
+        setErrorFlag(
+          state,
+          "transition",
+          action.payload ||
+            action.error?.message ||
+            "Error updating order lifecycle"
+        );
+      })
+
+      // -----------------------------------------------------------------
+      // Order lifecycle catalog
+      // -----------------------------------------------------------------
+      .addCase(fetchOrderLifeCycle.pending, (state) => {
+        setLoadingFlag(state, "lifeCycle", true);
+        setErrorFlag(state, "lifeCycle", null);
       })
       .addCase(fetchOrderLifeCycle.fulfilled, (state, action) => {
-        state.loading.lifeCycle = false;
+        setLoadingFlag(state, "lifeCycle", false);
         state.lifeCycle = action.payload;
       })
       .addCase(fetchOrderLifeCycle.rejected, (state, action) => {
-        state.loading.lifeCycle = false;
-        state.error.lifeCycle = action.payload;
+        setLoadingFlag(state, "lifeCycle", false);
+        setErrorFlag(state, "lifeCycle", action.payload);
       })
+
+      // -----------------------------------------------------------------
+      // Checkout
+      // -----------------------------------------------------------------
       .addCase(checkOutOrder.pending, (state) => {
-        state.loading.orders = true;
-        state.error.orders = null;
+        setLoadingFlag(state, "checkout", true);
+        setErrorFlag(state, "checkout", null);
       })
       .addCase(checkOutOrder.fulfilled, (state, action) => {
-        state.loading.orders = false;
-        state.orders = Array.isArray(action.payload) ? action.payload : [];
+        setLoadingFlag(state, "checkout", false);
+        // Do NOT write this over `state.orders` — that wiped the Orders page.
+        // Consumers of the checkout response should read `state.orders.checkoutResult`.
+        state.checkoutResult = action.payload;
       })
       .addCase(checkOutOrder.rejected, (state, action) => {
-        state.loading.orders = false;
-        state.error.orders =
+        setLoadingFlag(state, "checkout", false);
+        setErrorFlag(
+          state,
+          "checkout",
           action.payload ||
-          action.error?.message ||
-          "Failed to checkout order";
+            action.error?.message ||
+            "Failed to checkout order"
+        );
       })
+
+      // -----------------------------------------------------------------
+      // Order address / delivery
+      // -----------------------------------------------------------------
       .addCase(orderAddress.pending, (state) => {
-        state.loading.deliveryAddress = true;
-        state.error.deliveryAddress = null;
+        setLoadingFlag(state, "deliveryAddress", true);
+        setErrorFlag(state, "deliveryAddress", null);
       })
       .addCase(orderAddress.fulfilled, (state, action) => {
-        state.loading.deliveryAddress = false;
+        setLoadingFlag(state, "deliveryAddress", false);
         state.deliveryAddress = action.payload;
       })
       .addCase(orderAddress.rejected, (state, action) => {
-        state.loading.deliveryAddress = false;
-        state.error.deliveryAddress = action.payload;
+        setLoadingFlag(state, "deliveryAddress", false);
+        setErrorFlag(state, "deliveryAddress", action.payload);
       })
       .addCase(fetchOrderDeliveryAddress.fulfilled, (state, action) => {
         if (action.payload) {
@@ -401,59 +536,88 @@ const orderSlice = createSlice({
         }
       })
       .addCase(fetchOrderDeliveryAddress.rejected, (state, action) => {
-        state.error = action.payload;
+        // Was `state.error = action.payload` — clobbered the whole error field.
+        setErrorFlag(state, "deliveryAddress", action.payload);
       })
       .addCase(updateOrderDelivery.pending, (state) => {
-        state.loading.deliveryUpdate = true;
-        state.error.deliveryUpdate = null;
+        setLoadingFlag(state, "deliveryUpdate", true);
+        setErrorFlag(state, "deliveryUpdate", null);
       })
       .addCase(updateOrderDelivery.fulfilled, (state, action) => {
-        state.loading.deliveryUpdate = false;
+        setLoadingFlag(state, "deliveryUpdate", false);
         state.deliveryUpdate = action.payload;
       })
       .addCase(updateOrderDelivery.rejected, (state, action) => {
-        state.loading.deliveryUpdate = false;
-        state.error.deliveryUpdate =
+        setLoadingFlag(state, "deliveryUpdate", false);
+        setErrorFlag(
+          state,
+          "deliveryUpdate",
           action.payload ||
-          action.error?.message ||
-          "Failed to update order delivery";
+            action.error?.message ||
+            "Failed to update order delivery"
+        );
       })
+
+      // -----------------------------------------------------------------
+      // Sales order details (View Details modal)
+      // The payload is stored RAW on purpose — OrderDetailsModal already knows
+      // this shape. Only the loading/error bookkeeping changed.
+      // -----------------------------------------------------------------
       .addCase(fetchSalesOrderById.pending, (state) => {
-        state.loading = true;
-        state.error = null;
+        setLoadingFlag(state, "salesOrder", true);
+        setErrorFlag(state, "salesOrder", null);
       })
       .addCase(fetchSalesOrderById.fulfilled, (state, action) => {
-        state.loading = false;
+        setLoadingFlag(state, "salesOrder", false);
         state.salesOrder = action.payload;
       })
       .addCase(fetchSalesOrderById.rejected, (state, action) => {
-        state.loading = false;
-        state.error =
-          action.payload || "Failed to fetch sales order";
+        setLoadingFlag(state, "salesOrder", false);
+        setErrorFlag(
+          state,
+          "salesOrder",
+          action.payload || "Failed to fetch sales order"
+        );
       })
+
+      // -----------------------------------------------------------------
+      // Customer / third-party lists
+      // -----------------------------------------------------------------
       .addCase(fetchOrdersByCustomer.pending, (state) => {
-        state.loading = true;
-        state.error = null;
+        setLoadingFlag(state, "orders", true);
+        setErrorFlag(state, "orders", null);
       })
       .addCase(fetchOrdersByCustomer.fulfilled, (state, action) => {
-        state.loading = false;
-        state.orders = action.payload || [];
+        setLoadingFlag(state, "orders", false);
+        state.orders = toOrderArray(action.payload);
       })
       .addCase(fetchOrdersByCustomer.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.error.message;
+        setLoadingFlag(state, "orders", false);
+        setErrorFlag(
+          state,
+          "orders",
+          action.payload ||
+            action.error?.message ||
+            "Failed to fetch orders"
+        );
       })
       .addCase(fetchOrdersByThirdParty.pending, (state) => {
-        state.loading = true;
-        state.error = null;
+        setLoadingFlag(state, "orders", true);
+        setErrorFlag(state, "orders", null);
       })
       .addCase(fetchOrdersByThirdParty.fulfilled, (state, action) => {
-        state.loading = false;
-        state.orders = action.payload || [];
+        setLoadingFlag(state, "orders", false);
+        state.orders = toOrderArray(action.payload);
       })
       .addCase(fetchOrdersByThirdParty.rejected, (state, action) => {
-        state.loading = false;
-        state.error.orders = action.error.message;
+        setLoadingFlag(state, "orders", false);
+        setErrorFlag(
+          state,
+          "orders",
+          action.payload ||
+            action.error?.message ||
+            "Failed to fetch orders"
+        );
       });
   },
 });

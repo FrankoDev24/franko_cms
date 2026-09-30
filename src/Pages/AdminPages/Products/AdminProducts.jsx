@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, Component } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
   fetchAllProducts,
@@ -7,6 +7,12 @@ import {
   fetchMultipleCTP002ProductVariants, // ✅ correct name
   fetchProductsWithoutVariants,
   createProductVariantAndMerge,
+  // ✅ NEW: product images / by-id endpoints
+  fetchProductById,
+  fetchProductImages,
+  addProductImages,
+  deleteProductImage,
+  clearCurrentProduct,
 } from "../../../Redux/Slice/productSlice";
 import { fetchBrands } from "../../../Redux/Slice/brandSlice";
 import { fetchShowrooms } from "../../../Redux/Slice/showRoomSlice";
@@ -30,6 +36,9 @@ import {
   List,
   Spin,
   Divider,
+  Upload,
+  Popconfirm,
+  Typography,
 } from "antd";
 import {
   EyeOutlined,
@@ -42,6 +51,8 @@ import {
   ShopOutlined,
   TagsOutlined,
   BranchesOutlined,
+  PictureOutlined,
+  DeleteOutlined,
 } from "@ant-design/icons";
 import * as XLSX from "xlsx";
 import AddProduct from "./AddProduct";
@@ -49,6 +60,7 @@ import UpdateProduct from "./EditProduct";
 import UpdateProductImage from "./UpdateProductImage";
 
 const { Option } = Select;
+const { Text } = Typography;
 
 const backendBaseURL = "https://cms.frankotrading.com";
 
@@ -101,6 +113,19 @@ const getVariantParentId = (variant) =>
   variant?.ParentId ||
   "";
 
+// Module-level so the ProductImagesPanel sub-component can use it too.
+const getImageUrl = (imagePath) => {
+  if (!imagePath) return "";
+  const fileName = String(imagePath).split("\\").pop().split("/").pop();
+  return `${backendBaseURL}/Media/Products_Images/${fileName}`;
+};
+
+// Resolve the {Code} used by Product-Get-by-Product_ID / GetProductImages /
+// AddProductImages / DeleteProductImage. It is the PRODUCT ID; if your API
+// keys by the ProductId2 business code instead, swap the order here (one-line
+// change — see CHANGES.md).
+const resolveProductCode = (product) => getProductId(product) || getProductId2(product);
+
 const AdminProducts = () => {
   const dispatch = useDispatch();
 
@@ -130,6 +155,11 @@ const AdminProducts = () => {
     (state) => state.products?.loading
   );
 
+  // ✅ NEW: fresh-by-id record (Product-Get-by-Product_ID/{Code})
+  const currentProduct = useSelector(
+    (state) => state.products?.currentProduct || null
+  );
+
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isUpdateModalVisible, setIsUpdateModalVisible] = useState(false);
   const [isImagePreviewVisible, setIsImagePreviewVisible] = useState(false);
@@ -142,6 +172,10 @@ const AdminProducts = () => {
   const [isVariantModalVisible, setIsVariantModalVisible] = useState(false);
   const [selectedProductForVariants, setSelectedProductForVariants] =
     useState(null);
+
+  // ✅ NEW: product images (gallery) manager modal
+  const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
+  const [selectedProductForImages, setSelectedProductForImages] = useState(null);
 
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedProductForImage, setSelectedProductForImage] = useState(null);
@@ -157,12 +191,6 @@ const AdminProducts = () => {
 
   const isLoading =
     productsLoading || brandsLoading || showroomsLoading || refreshLoading;
-
-  const getImageUrl = useCallback((imagePath) => {
-    if (!imagePath) return "";
-    const fileName = String(imagePath).split("\\").pop().split("/").pop();
-    return `${backendBaseURL}/Media/Products_Images/${fileName}`;
-  }, []);
 
   /* ---------- Map of ctp002 parentId -> variants[] ---------- *
    * Builds a robust map using BOTH sources so a single bad response
@@ -360,10 +388,44 @@ const sorted = [...filtered].sort((a, b) => {
     setIsUpdateImageModalVisible(true);
   }, []);
 
+  /* ✅ View Details — fetch the FRESH record via
+     Product-Get-by-Product_ID/{Code} plus its gallery via
+     GetProductImages/{Code}; the row data stays as fallback. */
   const handleViewProductDetails = useCallback((product) => {
+    if (!product) return;
     setSelectedProduct(product);
     setIsDetailModalVisible(true);
+    const code = resolveProductCode(product);
+    if (code) {
+      dispatch(fetchProductById(code));
+      dispatch(fetchProductImages(code));
+    }
+  }, [dispatch]);
+
+  const closeDetailModal = useCallback(() => {
+    setIsDetailModalVisible(false);
+    dispatch(clearCurrentProduct());
+  }, [dispatch]);
+
+  /* ✅ Manage Images — the gallery manager (Get/Add/DeleteProductImage) */
+  const handleManageImages = useCallback((product) => {
+    if (!product) {
+      message.warning("No product selected");
+      return;
+    }
+    setSelectedProductForImages(product);
+    setIsImagesModalVisible(true);
   }, []);
+
+  /* Prefer the freshly fetched record when it matches the selected row. */
+  const detailProduct = useMemo(() => {
+    if (!selectedProduct) return null;
+    const selId = String(getProductId(selectedProduct) || "");
+    const curId = String(getProductId(currentProduct) || "");
+    return currentProduct && curId && curId === selId
+      ? currentProduct
+      : selectedProduct;
+  }, [selectedProduct, currentProduct]);
 
   const handleManageVariants = useCallback(
     async (product) => {
@@ -463,7 +525,7 @@ const sorted = [...filtered].sort((a, b) => {
       setFullImageUrl(imageUrl);
       setIsImagePreviewVisible(true);
     },
-    [getImageUrl]
+    []
   );
 
   const exportToExcel = useCallback(() => {
@@ -641,7 +703,7 @@ const sorted = [...filtered].sort((a, b) => {
       {
         title: "Actions",
         key: "actions",
-        width: 170,
+        width: 210,
         fixed: "right",
         render: (_, record) => (
           <Space size="small">
@@ -659,6 +721,14 @@ const sorted = [...filtered].sort((a, b) => {
                 onClick={() => handleUpdateProductImage(record)}
               />
             </Tooltip>
+            {/* ✅ NEW: gallery manager (Get/Add/DeleteProductImage) */}
+            <Tooltip title="Manage Images">
+              <Button
+                type="text"
+                icon={<PictureOutlined />}
+                onClick={() => handleManageImages(record)}
+              />
+            </Tooltip>
            
             <Tooltip title="View Details">
               <Button
@@ -672,13 +742,11 @@ const sorted = [...filtered].sort((a, b) => {
       },
     ],
     [
-      getImageUrl,
       handlePreviewImage,
       handleUpdateProduct,
       handleUpdateProductImage,
-      handleManageVariants,
+      handleManageImages,
       handleViewProductDetails,
-      variantCountByProductId2,
     ]
   );
 
@@ -1054,6 +1122,31 @@ const sorted = [...filtered].sort((a, b) => {
         )}
       </Modal>
 
+      {/* ✅ PRODUCT IMAGES (GALLERY) MODAL — Get/Add/DeleteProductImage */}
+      <Modal
+        open={isImagesModalVisible}
+        onCancel={() => setIsImagesModalVisible(false)}
+        footer={null}
+        centered
+        width={720}
+        title={
+          selectedProductForImages ? (
+            <Space>
+              <PictureOutlined style={{ color: "#52c41a" }} />
+              <span>
+                Images for: {getProductName(selectedProductForImages)}
+              </span>
+            </Space>
+          ) : (
+            "Product Images"
+          )
+        }
+      >
+        {selectedProductForImages && (
+          <ProductImagesPanel product={selectedProductForImages} />
+        )}
+      </Modal>
+
       <Modal
         open={isImagePreviewVisible}
         onCancel={() => setIsImagePreviewVisible(false)}
@@ -1071,18 +1164,18 @@ const sorted = [...filtered].sort((a, b) => {
 
       <Modal
         open={isDetailModalVisible}
-        onCancel={() => setIsDetailModalVisible(false)}
+        onCancel={closeDetailModal}
         footer={null}
         centered
         width={700}
         title="Product Details"
       >
-        {selectedProduct && (
+        {detailProduct && (
           <div>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
               <img
-                src={getImageUrl(getProductImage(selectedProduct))}
-                alt={getProductName(selectedProduct)}
+                src={getImageUrl(getProductImage(detailProduct))}
+                alt={getProductName(detailProduct)}
                 style={{
                   width: "100%",
                   maxHeight: 300,
@@ -1093,42 +1186,42 @@ const sorted = [...filtered].sort((a, b) => {
             </div>
 
             <h2 style={{ fontSize: 24, fontWeight: 600, marginBottom: 16 }}>
-              {getProductName(selectedProduct)}
+              {getProductName(detailProduct)}
             </h2>
 
             <Row gutter={[16, 12]}>
               <Col span={12}>
                 <strong>Product ID:</strong>{" "}
-                {getProductId(selectedProduct) || "-"}
+                {getProductId(detailProduct) || "-"}
               </Col>
               <Col span={12}>
                 <strong>Parent ID (CTP002):</strong>{" "}
-                {getProductId2(selectedProduct) || "-"}
+                {getProductId2(detailProduct) || "-"}
               </Col>
               <Col span={12}>
                 <strong>Category:</strong>{" "}
-                {getCategoryName(selectedProduct) || "-"}
+                {getCategoryName(detailProduct) || "-"}
               </Col>
               <Col span={12}>
-                <strong>Brand:</strong> {getBrandName(selectedProduct) || "-"}
+                <strong>Brand:</strong> {getBrandName(detailProduct) || "-"}
               </Col>
               <Col span={12}>
                 <strong>Showroom:</strong>{" "}
-                {getShowroomName(selectedProduct) || "-"}
+                {getShowroomName(detailProduct) || "-"}
               </Col>
               <Col span={12}>
                 <strong>Date Created:</strong>{" "}
-                {getDateCreated(selectedProduct)
-                  ? new Date(getDateCreated(selectedProduct)).toLocaleDateString()
+                {getDateCreated(detailProduct)
+                  ? new Date(getDateCreated(detailProduct)).toLocaleDateString()
                   : "-"}
               </Col>
               <Col span={12}>
                 <strong>Status:</strong>
                 <Tag
-                  color={getStatus(selectedProduct) == 1 ? "success" : "error"}
+                  color={getStatus(detailProduct) == 1 ? "success" : "error"}
                   style={{ marginLeft: 8 }}
                 >
-                  {getStatus(selectedProduct) == 1
+                  {getStatus(detailProduct) == 1
                     ? "In Stock"
                     : "Out of Stock"}
                 </Tag>
@@ -1137,7 +1230,7 @@ const sorted = [...filtered].sort((a, b) => {
                 <strong>Variants:</strong>{" "}
                 <Tag color="purple">
                   {variantCountByProductId2[
-                    getProductId2(selectedProduct)
+                    getProductId2(detailProduct)
                   ] || 0}
                 </Tag>
               </Col>
@@ -1155,11 +1248,19 @@ const sorted = [...filtered].sort((a, b) => {
                   cursor: "pointer",
                 }}
                 onClick={() =>
-                  handleDescriptionClick(getDescription(selectedProduct))
+                  handleDescriptionClick(getDescription(detailProduct))
                 }
               >
-                {getDescription(selectedProduct) || "No description"}
+                {getDescription(detailProduct) || "No description"}
               </p>
+            </div>
+
+            <Divider />
+
+            {/* ✅ NEW: full image gallery with add/delete */}
+            <div>
+              <strong>Product Images:</strong>
+              <ProductImagesPanel product={detailProduct} />
             </div>
           </div>
         )}
@@ -1179,6 +1280,251 @@ const sorted = [...filtered].sort((a, b) => {
         </div>
       </Modal>
     </div>
+  );
+};
+
+/* ---------- Product Images (gallery) panel ----------
+ * GET    /Product/GetProductImages/{Code}    → list
+ * POST   /Product/AddProductImages/{Code}    → upload (batch)
+ * POST   /Product/DeleteProductImage/{Code}  → delete (confirm)
+ * Used by both the "Manage Images" modal and the Details modal.
+ */
+const ProductImagesPanel = ({ product }) => {
+  const dispatch = useDispatch();
+  const code = resolveProductCode(product);
+
+  const images = useSelector(
+    (state) => (code ? state.products?.productImagesByCode?.[code] : null) || []
+  );
+  const imagesLoading = useSelector(
+    (state) => state.products?.imagesLoading || false
+  );
+  const imagesError = useSelector(
+    (state) => state.products?.imagesError || null
+  );
+
+  const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    if (code) {
+      dispatch(fetchProductImages(code));
+    }
+  }, [dispatch, code]);
+
+  const handleAddFiles = useCallback(
+    async (files) => {
+      if (!code || !files?.length) return;
+      const valid = files.filter(
+        (f) => f.type?.startsWith("image/") && f.size / 1024 / 1024 < 5
+      );
+      const rejected = files.length - valid.length;
+      if (rejected > 0) {
+        message.warning(`${rejected} file(s) skipped (not an image or over 5MB).`);
+      }
+      if (!valid.length) return;
+
+      setUploading(true);
+      try {
+        await dispatch(addProductImages({ code, imageFiles: valid })).unwrap();
+        message.success(`${valid.length} image(s) added`);
+        await dispatch(fetchProductImages(code));
+      } catch (err) {
+        console.error("Add images error:", err);
+        message.error(typeof err === "string" ? err : "Failed to add images");
+      } finally {
+        setUploading(false);
+      }
+    },
+    [dispatch, code]
+  );
+
+  // antd fires beforeUpload once per file with the full batch in fileList;
+  // upload the batch when the last file of the selection arrives.
+  const handleBeforeUpload = useCallback(
+    (file, fileList) => {
+      if (fileList.indexOf(file) === fileList.length - 1) {
+        handleAddFiles(fileList);
+      }
+      return false;
+    },
+    [handleAddFiles]
+  );
+
+  const handleDelete = useCallback(
+    async (image) => {
+      if (!code) return;
+      try {
+        await dispatch(
+          deleteProductImage({
+            code,
+            imageName: image?.imageName || null,
+            imageId: image?.id || null,
+          })
+        ).unwrap();
+        message.success("Image deleted");
+      } catch (err) {
+        console.error("Delete image error:", err);
+        message.error(typeof err === "string" ? err : "Failed to delete image");
+      }
+    },
+    [dispatch, code]
+  );
+
+  const mainImage = getImageUrl(getProductImage(product));
+
+  return (
+    <Spin spinning={imagesLoading || uploading}>
+      <Space direction="vertical" style={{ width: "100%" }} size="middle">
+        {/* Primary image (managed by the "Update Image" action) */}
+        <div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Primary image
+          </Text>
+          <div
+            style={{
+              marginTop: 6,
+              width: 120,
+              height: 120,
+              border: "1px solid #f0f0f0",
+              borderRadius: 8,
+              overflow: "hidden",
+              background: "#fafafa",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            {mainImage ? (
+              <img
+                src={mainImage}
+                alt="Primary"
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <PictureOutlined style={{ fontSize: 28, color: "#bfbfbf" }} />
+            )}
+          </div>
+        </div>
+
+        <Divider style={{ margin: "8px 0" }} />
+
+        {/* Gallery images */}
+        <div>
+          <Space style={{ marginBottom: 10 }}>
+            <Text strong>Gallery images</Text>
+            <Tag color="blue">{images.length}</Tag>
+            <Upload
+              multiple
+              accept="image/*"
+              showUploadList={false}
+              beforeUpload={handleBeforeUpload}
+            >
+              <Button
+                size="small"
+                type="primary"
+                icon={<UploadOutlined />}
+                loading={uploading}
+              >
+                Add Images
+              </Button>
+            </Upload>
+          </Space>
+
+          {imagesError ? (
+            <Empty
+              description={
+                <span style={{ color: "#ff4d4f" }}>
+                  Failed to load images:{" "}
+                  {typeof imagesError === "string" ? imagesError : "error"}
+                </span>
+              }
+            />
+          ) : images.length === 0 ? (
+            <Empty description="No gallery images for this product" />
+          ) : (
+            <Row gutter={[10, 10]}>
+              {images.map((image) => {
+                const src = image.imageUrl || getImageUrl(image.imageName);
+                return (
+                  <Col key={image.key}>
+                    <div
+                      style={{
+                        position: "relative",
+                        width: 110,
+                        height: 110,
+                        border: "1px solid #f0f0f0",
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        background: "#fafafa",
+                      }}
+                    >
+                      {src ? (
+                        <img
+                          src={src}
+                          alt={image.imageName || "product image"}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            height: "100%",
+                            color: "#bfbfbf",
+                          }}
+                        >
+                          <PictureOutlined />
+                        </div>
+                      )}
+                      <Popconfirm
+                        title="Delete this image?"
+                        description={image.imageName || undefined}
+                        okText="Delete"
+                        okButtonProps={{ danger: true }}
+                        cancelText="Cancel"
+                        onConfirm={() => handleDelete(image)}
+                      >
+                        <Button
+                          size="small"
+                          danger
+                          type="text"
+                          icon={<DeleteOutlined />}
+                          style={{
+                            position: "absolute",
+                            top: 4,
+                            right: 4,
+                            background: "rgba(255, 255, 255, 0.9)",
+                          }}
+                        />
+                      </Popconfirm>
+                    </div>
+                    <Text
+                      style={{
+                        display: "block",
+                        width: 110,
+                        fontSize: 11,
+                        color: "#8c8c8c",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                      title={image.imageName}
+                    >
+                      {image.imageName || image.id}
+                    </Text>
+                  </Col>
+                );
+              })}
+            </Row>
+          )}
+        </div>
+      </Space>
+    </Spin>
   );
 };
 
@@ -1305,4 +1651,55 @@ const BulkFetchForm = ({ onFetch, loading }) => {
   );
 };
 
-export default AdminProducts;
+/* ---------- Error boundary ----------
+ * Wraps the whole Products page: if anything inside throws during render,
+ * users see a readable error + Reload instead of a blank white page.
+ */
+class ProductErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Products page crashed:", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 48, textAlign: "center" }}>
+          <h2 style={{ color: "#ff4d4f", marginBottom: 8 }}>
+            Something went wrong on the Products page.
+          </h2>
+          <p style={{ color: "#8c8c8c", marginBottom: 16 }}>
+            {String(this.state.error?.message || this.state.error)}
+          </p>
+          <Space>
+            <Button type="primary" onClick={() => window.location.reload()}>
+              Reload Page
+            </Button>
+            <Button
+              onClick={() => this.setState({ error: null })}
+            >
+              Try Again
+            </Button>
+          </Space>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const AdminProductsPage = () => (
+  <ProductErrorBoundary>
+    <AdminProducts />
+  </ProductErrorBoundary>
+);
+
+export default AdminProductsPage;

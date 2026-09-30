@@ -16,12 +16,12 @@ import {
   Spin,
   Tag
 } from 'antd';
-import { UploadOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons';
+import { UploadOutlined, CheckCircleOutlined, WarningOutlined, DeleteOutlined, PictureOutlined } from '@ant-design/icons';
 import PropTypes from 'prop-types';
 import { useDispatch, useSelector } from 'react-redux';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { addProduct, fetchProducts } from '../../../Redux/Slice/productSlice';
+import { addProduct, addProductImages, fetchProducts } from '../../../Redux/Slice/productSlice';
 import { fetchBrands } from '../../../Redux/Slice/brandSlice';
 import { fetchShowrooms } from '../../../Redux/Slice/showRoomSlice';
 import { fetchCategories } from '../../../Redux/Slice/categorySlice';
@@ -29,6 +29,8 @@ import { fetchBranchProducts } from '../../../Redux/Slice/branchProductSlice';
 
 const { Option } = Select;
 const { Text, Title } = Typography;
+
+const MAX_GALLERY_IMAGES = 8;
 
 const AddProduct = ({ visible, onClose }) => {
   const dispatch = useDispatch();
@@ -38,6 +40,10 @@ const AddProduct = ({ visible, onClose }) => {
   const [productImageFile, setProductImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [charCount, setCharCount] = useState(0);
+
+  // ✅ NEW: additional (gallery) images — uploaded after the product is created
+  // via POST /Product/AddProductImages/{Code}
+  const [galleryItems, setGalleryItems] = useState([]);
   
   // Branch product lookup state
   const [branchLookupResult, setBranchLookupResult] = useState(null);
@@ -152,6 +158,56 @@ const AddProduct = ({ visible, onClose }) => {
 
   const generateRandomId = () => Math.floor(10000 + Math.random() * 90000).toString();
 
+  /* ---------- Gallery image helpers (Product/AddProductImages/{Code}) ---------- */
+  const addGalleryFiles = useCallback((files) => {
+    const accepted = [];
+    for (const file of files) {
+      if (!file.type?.startsWith("image/")) {
+        message.error(`"${file.name}" is not an image file.`);
+        continue;
+      }
+      if (file.size / 1024 / 1024 >= 5) {
+        message.error(`"${file.name}" is larger than 5MB.`);
+        continue;
+      }
+      accepted.push({
+        key: `${file.name}-${file.uid || Date.now()}-${accepted.length}`,
+        file,
+        name: file.name,
+        url: URL.createObjectURL(file),
+      });
+    }
+    if (!accepted.length) return;
+
+    setGalleryItems((prev) => {
+      const next = [...prev, ...accepted];
+      if (next.length > MAX_GALLERY_IMAGES) {
+        message.warning(`Only the first ${MAX_GALLERY_IMAGES} additional images are kept.`);
+        // revoke the overflow previews
+        next.slice(MAX_GALLERY_IMAGES).forEach((item) => URL.revokeObjectURL(item.url));
+        return next.slice(0, MAX_GALLERY_IMAGES);
+      }
+      return next;
+    });
+  }, []);
+
+  const removeGalleryItem = useCallback((key) => {
+    setGalleryItems((prev) => {
+      const target = prev.find((item) => item.key === key);
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter((item) => item.key !== key);
+    });
+  }, []);
+
+  // antd fires beforeUpload once per file with the full batch in fileList;
+  // handle the whole batch when the last file of the selection arrives.
+  const handleGalleryBeforeUpload = useCallback((file, fileList) => {
+    if (fileList.indexOf(file) === fileList.length - 1) {
+      addGalleryFiles(fileList);
+    }
+    return false; // never auto-upload; we submit with the product
+  }, [addGalleryFiles]);
+
   const onFinish = async (values) => {
     const apiValues = {
       ProductName: values.productName,
@@ -188,7 +244,32 @@ const AddProduct = ({ visible, onClose }) => {
 
     try {
       setUploading(true);
-      await dispatch(addProduct(formData)).unwrap();
+      const created = await dispatch(addProduct(formData)).unwrap();
+
+      // ✅ NEW: upload additional gallery images against the created product
+      // (POST /Product/AddProductImages/{Code}). The product must exist first,
+      // so this runs after Product-Post succeeds. Failure here does NOT undo
+      // the product — it is reported separately.
+      if (galleryItems.length > 0) {
+        const code =
+          created?.productID || created?.ProductID || created?.Productid ||
+          apiValues.ProductID;
+        try {
+          await dispatch(
+            addProductImages({ code, imageFiles: galleryItems.map((g) => g.file) })
+          ).unwrap();
+          message.success(
+            `${galleryItems.length} additional image(s) uploaded for product code: ${code}`
+          );
+        } catch (imgErr) {
+          console.error("Gallery upload error:", imgErr);
+          message.warning(
+            `Product was saved, but ${galleryItems.length} additional image(s) failed to upload. ` +
+              `You can add them from the Products page ("Manage Images").`
+          );
+        }
+      }
+
       message.success(`Product added successfully with code: ${apiValues.ProductId2}`);
       await dispatch(fetchProducts());
       handleReset();
@@ -220,6 +301,9 @@ const AddProduct = ({ visible, onClose }) => {
     setShowroomSearchValue('');
     setCategorySearchValue('');
     setBranchLookupResult(null);
+    // ✅ NEW: clean up gallery previews
+    galleryItems.forEach((item) => URL.revokeObjectURL(item.url));
+    setGalleryItems([]);
   };
 
   const handleUploadChange = (info) => {
@@ -614,6 +698,80 @@ const AddProduct = ({ visible, onClose }) => {
           )}
         </Form.Item>
 
+        {/* ✅ NEW: Additional product images → /Product/AddProductImages/{Code} */}
+        <Form.Item
+          label={
+            <Space>
+              <PictureOutlined style={{ color: '#52c41a' }} />
+              <span>Additional Product Images</span>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                (optional — uploaded with the product, max {MAX_GALLERY_IMAGES}, 5MB each)
+              </Text>
+            </Space>
+          }
+          extra="These are stored via Product/AddProductImages and shown in the product's image gallery."
+        >
+          <Upload
+            multiple
+            accept="image/*"
+            showUploadList={false}
+            beforeUpload={handleGalleryBeforeUpload}
+          >
+            <Button icon={<UploadOutlined />}>Add Images</Button>
+          </Upload>
+
+          {galleryItems.length > 0 && (
+            <Row gutter={[8, 8]} style={{ marginTop: 12 }}>
+              {galleryItems.map((item) => (
+                <Col key={item.key}>
+                  <div
+                    style={{
+                      position: 'relative',
+                      width: 96,
+                      height: 96,
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 8,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <img
+                      src={item.url}
+                      alt={item.name}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <Button
+                      size="small"
+                      danger
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      onClick={() => removeGalleryItem(item.key)}
+                      style={{
+                        position: 'absolute',
+                        top: 2,
+                        right: 2,
+                        background: 'rgba(255, 255, 255, 0.85)',
+                      }}
+                    />
+                  </div>
+                  <Text
+                    style={{
+                      display: 'block',
+                      width: 96,
+                      fontSize: 11,
+                      color: '#8c8c8c',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {item.name}
+                  </Text>
+                </Col>
+              ))}
+            </Row>
+          )}
+        </Form.Item>
+
         <Form.Item>
           <Row gutter={16}>
             <Col span={12}>
@@ -638,7 +796,7 @@ const AddProduct = ({ visible, onClose }) => {
                   borderColor: '#52c41a'
                 }}
               >
-                Add Product
+                Add Product{galleryItems.length > 0 ? ` (+${galleryItems.length} images)` : ''}
               </Button>
             </Col>
           </Row>
