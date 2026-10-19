@@ -81,6 +81,10 @@ const initialLoading = {
   transition: false,
   lifeCycle: false,
   deliveryAddress: false,
+  // ✅ NEW: the delivery-address GET is tracked separately from the
+  // delivery-address POST (`deliveryAddress`). Mixing them meant a slow/failed
+  // read could flip the same flag a save was using.
+  deliveryAddressFetch: false,
   deliveryUpdate: false,
 };
 
@@ -91,6 +95,7 @@ const initialError = {
   transition: null,
   lifeCycle: null,
   deliveryAddress: null,
+  deliveryAddressFetch: null,
   deliveryUpdate: null,
 };
 
@@ -289,10 +294,25 @@ export const orderAddress = createAsyncThunk(
   }
 );
 
+/* --------------------------------------------------------------------------
+   GET /Order/GetOrderDeliveryAddress/{OrderCode}
+
+   {OrderCode} is the ORDER CODE ("ORD…"), not the Mongo `_id` — confirmed by
+   the OpenAPI document. It is a second, independent request: the UI must never
+   block the sales-order details on it (it can be markedly slower).
+
+   It now has its own pending/rejected flags (`deliveryAddressFetch`) so:
+     • consumers can render a local placeholder instead of freezing the dialog
+     • a failure is recorded without clobbering `error.deliveryAddress`, which
+       belongs to the address *save* (OrderAddress POST)
+   -------------------------------------------------------------------------- */
 export const fetchOrderDeliveryAddress = createAsyncThunk(
   "orders/fetchOrderDeliveryAddress",
   async (OrderCode, { rejectWithValue }) => {
     try {
+      if (!OrderCode) {
+        throw new Error("OrderCode is required.");
+      }
       const { data } = await axiosInstance.get("/", {
         params: {
           endpoint: `/Order/GetOrderDeliveryAddress/${OrderCode}`,
@@ -528,17 +548,32 @@ const orderSlice = createSlice({
         setLoadingFlag(state, "deliveryAddress", false);
         setErrorFlag(state, "deliveryAddress", action.payload);
       })
+
+      // ✅ FIX: the GET now has all three states and its own flag, so the
+      // details dialog can show a placeholder instead of blocking on it.
+      .addCase(fetchOrderDeliveryAddress.pending, (state) => {
+        setLoadingFlag(state, "deliveryAddressFetch", true);
+        setErrorFlag(state, "deliveryAddressFetch", null);
+      })
       .addCase(fetchOrderDeliveryAddress.fulfilled, (state, action) => {
-        if (action.payload) {
-          state.deliveryAddress = action.payload;
-        } else {
-          state.deliveryAddress = null;
-        }
+        setLoadingFlag(state, "deliveryAddressFetch", false);
+        setErrorFlag(state, "deliveryAddressFetch", null);
+        state.deliveryAddress = action.payload ?? null;
       })
       .addCase(fetchOrderDeliveryAddress.rejected, (state, action) => {
+        setLoadingFlag(state, "deliveryAddressFetch", false);
         // Was `state.error = action.payload` — clobbered the whole error field.
-        setErrorFlag(state, "deliveryAddress", action.payload);
+        setErrorFlag(
+          state,
+          "deliveryAddressFetch",
+          action.payload ||
+            action.error?.message ||
+            "Failed to fetch delivery address"
+        );
+        // Keep whatever was there; the dialog falls back to the order's own
+        // address rather than showing nothing.
       })
+
       .addCase(updateOrderDelivery.pending, (state) => {
         setLoadingFlag(state, "deliveryUpdate", true);
         setErrorFlag(state, "deliveryUpdate", null);

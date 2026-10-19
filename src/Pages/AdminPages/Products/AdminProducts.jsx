@@ -13,6 +13,7 @@ import {
   addProductImages,
   deleteProductImage,
   clearCurrentProduct,
+  getImageIdentifier, // ✅ NEW: raw identifier expected by DeleteProductImage
 } from "../../../Redux/Slice/productSlice";
 import { fetchBrands } from "../../../Redux/Slice/brandSlice";
 import { fetchShowrooms } from "../../../Redux/Slice/showRoomSlice";
@@ -114,17 +115,41 @@ const getVariantParentId = (variant) =>
   "";
 
 // Module-level so the ProductImagesPanel sub-component can use it too.
+// Handles full URLs, Windows paths and rooted "/Media/..." paths.
 const getImageUrl = (imagePath) => {
   if (!imagePath) return "";
-  const fileName = String(imagePath).split("\\").pop().split("/").pop();
+  const value = String(imagePath).trim();
+  if (/^https?:\/\//i.test(value) || /^data:image\//i.test(value)) return value;
+
+  // Already a server-relative media path (what GetProductImages often returns).
+  const cleaned = value.replace(/^[\\/]+/, "").replace(/\\/g, "/");
+  if (cleaned.toLowerCase().startsWith("media/")) {
+    return `${backendBaseURL}/${cleaned}`;
+  }
+
+  const fileName = cleaned.split("/").pop();
   return `${backendBaseURL}/Media/Products_Images/${fileName}`;
 };
 
 // Resolve the {Code} used by Product-Get-by-Product_ID / GetProductImages /
-// AddProductImages / DeleteProductImage. It is the PRODUCT ID; if your API
-// keys by the ProductId2 business code instead, swap the order here (one-line
-// change — see CHANGES.md).
+// AddProductImages / DeleteProductImage.
+// The OpenAPI document defines {Code} as a plain string; the value that works
+// against the live API is the product GUID (productID). If your database keys
+// images by the ProductId2 business code instead, swap the two operands here.
 const resolveProductCode = (product) => getProductId(product) || getProductId2(product);
+
+// Turn whatever the thunk rejected with into readable text for message.error.
+const errorText = (err) => {
+  if (!err) return "Something went wrong.";
+  if (typeof err === "string") return err;
+  return (
+    err.responseMessage ||
+    err.message ||
+    err.title ||
+    (Array.isArray(err.errors) ? err.errors.filter(Boolean).join(", ") : "") ||
+    "Something went wrong."
+  );
+};
 
 const AdminProducts = () => {
   const dispatch = useDispatch();
@@ -389,8 +414,8 @@ const sorted = [...filtered].sort((a, b) => {
   }, []);
 
   /* ✅ View Details — fetch the FRESH record via
-     Product-Get-by-Product_ID/{Code} plus its gallery via
-     GetProductImages/{Code}; the row data stays as fallback. */
+     Product-Get-by-Product_ID/{Code}; the row data stays as fallback.
+     The gallery is loaded by <ProductImagesPanel /> itself. */
   const handleViewProductDetails = useCallback((product) => {
     if (!product) return;
     setSelectedProduct(product);
@@ -398,7 +423,6 @@ const sorted = [...filtered].sort((a, b) => {
     const code = resolveProductCode(product);
     if (code) {
       dispatch(fetchProductById(code));
-      dispatch(fetchProductImages(code));
     }
   }, [dispatch]);
 
@@ -1285,8 +1309,8 @@ const sorted = [...filtered].sort((a, b) => {
 
 /* ---------- Product Images (gallery) panel ----------
  * GET    /Product/GetProductImages/{Code}    → list
- * POST   /Product/AddProductImages/{Code}    → upload (batch)
- * POST   /Product/DeleteProductImage/{Code}  → delete (confirm)
+ * POST   /Product/AddProductImages/{Code}    → upload (batch, field name "images")
+ * POST   /Product/DeleteProductImage/{Code}  → delete (confirm, JSON string array)
  * Used by both the "Manage Images" modal and the Details modal.
  */
 const ProductImagesPanel = ({ product }) => {
@@ -1305,15 +1329,18 @@ const ProductImagesPanel = ({ product }) => {
 
   const [uploading, setUploading] = useState(false);
 
-  useEffect(() => {
-    if (code) {
-      dispatch(fetchProductImages(code));
-    }
+  const loadImages = useCallback(() => {
+    if (code) dispatch(fetchProductImages(code));
   }, [dispatch, code]);
+
+  useEffect(() => {
+    loadImages();
+  }, [loadImages]);
 
   const handleAddFiles = useCallback(
     async (files) => {
       if (!code || !files?.length) return;
+
       const valid = files.filter(
         (f) => f.type?.startsWith("image/") && f.size / 1024 / 1024 < 5
       );
@@ -1325,17 +1352,20 @@ const ProductImagesPanel = ({ product }) => {
 
       setUploading(true);
       try {
-        await dispatch(addProductImages({ code, imageFiles: valid })).unwrap();
-        message.success(`${valid.length} image(s) added`);
-        await dispatch(fetchProductImages(code));
+        const result = await dispatch(
+          addProductImages({ code, imageFiles: valid })
+        ).unwrap();
+        message.success(`${result?.count || valid.length} image(s) added`);
+        // The thunk already re-reads the gallery; this is a safety net.
+        loadImages();
       } catch (err) {
         console.error("Add images error:", err);
-        message.error(typeof err === "string" ? err : "Failed to add images");
+        message.error(errorText(err));
       } finally {
         setUploading(false);
       }
     },
-    [dispatch, code]
+    [dispatch, code, loadImages]
   );
 
   // antd fires beforeUpload once per file with the full batch in fileList;
@@ -1353,21 +1383,25 @@ const ProductImagesPanel = ({ product }) => {
   const handleDelete = useCallback(
     async (image) => {
       if (!code) return;
+      // DeleteProductImage/{Code} expects the image name(s) as a JSON array.
+      // Send back exactly what the GET returned when it was a plain string.
+      const identifier = getImageIdentifier(image);
+      if (!identifier) {
+        message.error("This image has no name to delete with.");
+        return;
+      }
       try {
         await dispatch(
-          deleteProductImage({
-            code,
-            imageName: image?.imageName || null,
-            imageId: image?.id || null,
-          })
+          deleteProductImage({ code, imageName: identifier })
         ).unwrap();
         message.success("Image deleted");
+        loadImages();
       } catch (err) {
         console.error("Delete image error:", err);
-        message.error(typeof err === "string" ? err : "Failed to delete image");
+        message.error(errorText(err));
       }
     },
-    [dispatch, code]
+    [dispatch, code, loadImages]
   );
 
   const mainImage = getImageUrl(getProductImage(product));
@@ -1410,7 +1444,7 @@ const ProductImagesPanel = ({ product }) => {
 
         {/* Gallery images */}
         <div>
-          <Space style={{ marginBottom: 10 }}>
+          <Space style={{ marginBottom: 10 }} wrap>
             <Text strong>Gallery images</Text>
             <Tag color="blue">{images.length}</Tag>
             <Upload
@@ -1418,6 +1452,7 @@ const ProductImagesPanel = ({ product }) => {
               accept="image/*"
               showUploadList={false}
               beforeUpload={handleBeforeUpload}
+              disabled={uploading}
             >
               <Button
                 size="small"
@@ -1428,14 +1463,24 @@ const ProductImagesPanel = ({ product }) => {
                 Add Images
               </Button>
             </Upload>
+            <Tooltip title="Reload gallery">
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={loadImages}
+                loading={imagesLoading}
+              />
+            </Tooltip>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              product code: {code || "—"}
+            </Text>
           </Space>
 
           {imagesError ? (
             <Empty
               description={
                 <span style={{ color: "#ff4d4f" }}>
-                  Failed to load images:{" "}
-                  {typeof imagesError === "string" ? imagesError : "error"}
+                  Failed to load images: {errorText(imagesError)}
                 </span>
               }
             />

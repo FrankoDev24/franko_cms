@@ -21,7 +21,12 @@ import PropTypes from 'prop-types';
 import { useDispatch, useSelector } from 'react-redux';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { addProduct, addProductImages, fetchProducts } from '../../../Redux/Slice/productSlice';
+import {
+  addProduct,
+  addProductImages,
+  fetchProducts,
+  fetchAllProducts, // ✅ NEW: used to resolve the created product's real ID
+} from '../../../Redux/Slice/productSlice';
 import { fetchBrands } from '../../../Redux/Slice/brandSlice';
 import { fetchShowrooms } from '../../../Redux/Slice/showRoomSlice';
 import { fetchCategories } from '../../../Redux/Slice/categorySlice';
@@ -31,6 +36,26 @@ const { Option } = Select;
 const { Text, Title } = Typography;
 
 const MAX_GALLERY_IMAGES = 8;
+
+// First non-empty string wins — used to pull the created product's id out of
+// whatever shape Product-Post answers with.
+const pickString = (...values) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+};
+
+// Readable text from a rejected thunk payload (string | {responseMessage} | ...)
+const errText = (err, fallback = 'Something went wrong.') => {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  if (Array.isArray(err.errors)) {
+    const joined = err.errors.filter(Boolean).join(', ');
+    if (joined) return joined;
+  }
+  return err.responseMessage || err.message || err.title || fallback;
+};
 
 const AddProduct = ({ visible, onClose }) => {
   const dispatch = useDispatch();
@@ -208,6 +233,46 @@ const AddProduct = ({ visible, onClose }) => {
     return false; // never auto-upload; we submit with the product
   }, [addGalleryFiles]);
 
+  /* ------------------------------------------------------------------
+     Work out which {Code} the image endpoints need.
+     Product-Post may answer with the product itself, a wrapper, or
+     nothing useful. Priority:
+       1. an id echoed in the response
+       2. the row the server now returns for our ProductId2 (authoritative)
+       3. the ProductID we generated and sent (uuid)
+     ------------------------------------------------------------------ */
+  const resolveCreatedProductCode = useCallback(
+    async (created, sentValues) => {
+      const fromResponse = pickString(
+        created?.productID, created?.ProductID, created?.Productid,
+        created?.productId, created?.ProductId,
+        created?.data?.productID, created?.data?.ProductID, created?.data?.Productid,
+        created?.data?.productId, created?.data?.ProductId,
+        created?.product?.productID, created?.product?.ProductID,
+        created?.result?.productID, created?.result?.ProductID
+      );
+      if (fromResponse) return fromResponse;
+
+      try {
+        const all = await dispatch(fetchAllProducts()).unwrap();
+        const list = Array.isArray(all) ? all : [];
+        const wantedCode = String(sentValues.ProductId2 || '').trim();
+        const match = list.find(
+          (p) =>
+            String(p.productId2 || p.ProductId2 || p.productID2 || '').trim() === wantedCode &&
+            wantedCode !== ''
+        );
+        const fromList = pickString(match?.productID, match?.Productid, match?.ProductID);
+        if (fromList) return fromList;
+      } catch (lookupError) {
+        console.warn('Could not look up the new product to resolve its id:', lookupError);
+      }
+
+      return sentValues.ProductID || '';
+    },
+    [dispatch]
+  );
+
   const onFinish = async (values) => {
     const apiValues = {
       ProductName: values.productName,
@@ -246,27 +311,36 @@ const AddProduct = ({ visible, onClose }) => {
       setUploading(true);
       const created = await dispatch(addProduct(formData)).unwrap();
 
-      // ✅ NEW: upload additional gallery images against the created product
-      // (POST /Product/AddProductImages/{Code}). The product must exist first,
-      // so this runs after Product-Post succeeds. Failure here does NOT undo
-      // the product — it is reported separately.
+      /* ✅ FIXED: upload additional gallery images against the created product
+         (POST /Product/AddProductImages/{Code}). The endpoint needs the
+         product GUID as {Code}; Product-Post does not always echo it, so it is
+         resolved before uploading. A failure here does NOT undo the product —
+         it is reported separately and can be retried from "Manage Images". */
       if (galleryItems.length > 0) {
-        const code =
-          created?.productID || created?.ProductID || created?.Productid ||
-          apiValues.ProductID;
-        try {
-          await dispatch(
-            addProductImages({ code, imageFiles: galleryItems.map((g) => g.file) })
-          ).unwrap();
-          message.success(
-            `${galleryItems.length} additional image(s) uploaded for product code: ${code}`
-          );
-        } catch (imgErr) {
-          console.error("Gallery upload error:", imgErr);
+        const code = await resolveCreatedProductCode(created, apiValues);
+
+        if (!code) {
           message.warning(
-            `Product was saved, but ${galleryItems.length} additional image(s) failed to upload. ` +
-              `You can add them from the Products page ("Manage Images").`
+            'Product was saved, but its ID could not be resolved, so the additional ' +
+              'images were not uploaded. Add them from the Products page ("Manage Images").'
           );
+        } else {
+          try {
+            const uploadResult = await dispatch(
+              addProductImages({ code, imageFiles: galleryItems.map((g) => g.file) })
+            ).unwrap();
+            message.success(
+              `${uploadResult?.count || galleryItems.length} additional image(s) uploaded.`
+            );
+          } catch (imgErr) {
+            console.error('Gallery upload error:', imgErr);
+            message.warning(
+              `Product was saved, but the additional images failed: ${errText(
+                imgErr,
+                'unknown error'
+              )}. You can add them from the Products page ("Manage Images").`
+            );
+          }
         }
       }
 
@@ -276,16 +350,7 @@ const AddProduct = ({ visible, onClose }) => {
       onClose();
     } catch (err) {
       console.error(err);
-      if (typeof err === 'string') {
-        message.error(err);
-      } else if (err?.title) {
-        message.error(err.title);
-      } else if (err?.errors) {
-        const msgs = Object.values(err.errors).flat();
-        message.error(msgs.join(', '));
-      } else {
-        message.error('Failed to add product.');
-      }
+      message.error(errText(err, 'Failed to add product.'));
     } finally {
       setUploading(false);
     }
@@ -698,7 +763,8 @@ const AddProduct = ({ visible, onClose }) => {
           )}
         </Form.Item>
 
-        {/* ✅ NEW: Additional product images → /Product/AddProductImages/{Code} */}
+        {/* ✅ NEW: Additional product images → /Product/AddProductImages/{Code}
+            Field name is defined once in productSlice (IMAGE_FILE_FIELD = "images"). */}
         <Form.Item
           label={
             <Space>

@@ -329,23 +329,85 @@ export const fetchAllCTP002ProductVariants = createAsyncThunk(
    ------------------------------------------------
    GET    /Product/GetProductImages/{Code}     — list a product's images
    POST   /Product/AddProductImages/{Code}     — upload one or more images
-   POST   /Product/DeleteProductImage/{Code}   — delete one image
+   POST   /Product/DeleteProductImage/{Code}   — delete one or more images
    ------------------------------------------------
-   `{Code}` is the PRODUCT ID (same value Product-Get-by-Product_ID/{Code}
-   accepts — see getProductId()/resolveProductCode() in the UI). If your API
-   keys images by the ProductId2 business code instead, change the code value
-   passed by the UI (documented in CHANGES.md).
+   CONTRACT — verified against the live OpenAPI document
+   (https://cms.frankotrading.com/swagger/v1/swagger.json):
+
+   AddProductImages  multipart/form-data
+                       images: string(binary)[]      <-- FIELD NAME IS "images"
+   Product-Image-Edit multipart/form-data
+                       ProductId: string
+                       ImageName: string(binary)     <-- different endpoint, different name
+   DeleteProductImage application/json
+                       [ "image-name-1", ... ]       <-- BODY IS A STRING ARRAY
+
+   The old code sent the upload files as "ImageName" (copied from
+   Product-Image-Edit). ASP.NET Core could not bind `images`, so the action
+   received null, and returned HTTP 200 with
+       { responseCode: "0", responseMessage: "At least one image is required." }
+   Because the status was 200, axios never threw and the UI looked "fine".
    ========================================================================== */
 
-// Multipart field name for uploaded image files. The existing
-// /Product/Product-Image-Edit endpoint binds its file as "ImageName", so the
-// same name is used here. If AddProductImages expects e.g. "Files" /
-// "ImageFiles", change this one constant.
-export const IMAGE_FILE_FIELD = "ImageName";
+// ✅ FIX: must match the OpenAPI property name exactly.
+export const IMAGE_FILE_FIELD = "images";
 
-// Normalize the various shapes GetProductImages/AddProductImages may return
-// (["a.jpg", ...] | [{imageName|fileName|url|...}, ...] | wrapped {data|images})
-// into plain objects: { id, imageName, imageUrl, raw }.
+/* --------------------------------------------------------------------------
+   The API answers HTTP 200 even for failures and signals the real outcome in
+   the body: { responseCode: "1" } = success, { responseCode: "0" } = failure.
+   assertApiSuccess() turns a body-level failure into a rejected thunk so the
+   UI can show the backend's actual message instead of a false "success".
+   -------------------------------------------------------------------------- */
+const readMessage = (data) =>
+  data?.responseMessage ||
+  data?.ResponseMessage ||
+  data?.message ||
+  data?.Message ||
+  data?.title ||
+  "";
+
+export const assertApiSuccess = (data) => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return;
+
+  const rawCode = data.responseCode ?? data.ResponseCode;
+  const code = rawCode === undefined || rawCode === null ? "" : String(rawCode).trim();
+
+  const rawErrors = data.errors ?? data.Errors;
+  const hasErrors = Array.isArray(rawErrors)
+    ? rawErrors.filter(Boolean).length > 0
+    : Boolean(rawErrors);
+
+  const flaggedFalse =
+    data.success === false ||
+    data.Success === false ||
+    data.status === false;
+
+  // Only "0" is treated as failure — success is "1" (per the live API).
+  const failedByCode = code === "0" || code.toLowerCase() === "false";
+
+  if (!failedByCode && !hasErrors && !flaggedFalse) return;
+
+  const errorsText = Array.isArray(rawErrors)
+    ? rawErrors.filter(Boolean).join(", ")
+    : typeof rawErrors === "string"
+      ? rawErrors
+      : "";
+
+  const message =
+    [readMessage(data), errorsText].filter(Boolean).join(" — ") ||
+    "The server rejected the request.";
+
+  const err = new Error(message);
+  err.responseBody = data;
+  throw err;
+};
+
+/* Normalize the various shapes GetProductImages/AddProductImages may return
+   (["a.jpg", ...] | [{imageName|fileName|url|...}, ...] | wrapped {data|images})
+   into plain objects: { id, imageName, imageUrl, raw, key }.
+
+   `raw` is kept untouched on purpose: DeleteProductImage takes a string array,
+   and the safest identifier to send back is exactly the string the GET gave us. */
 export const toImageArray = (payload) => {
   const list = Array.isArray(payload)
     ? payload
@@ -353,19 +415,28 @@ export const toImageArray = (payload) => {
       ? payload.data
       : Array.isArray(payload?.images)
         ? payload.images
-        : [];
+        : Array.isArray(payload?.Images)
+          ? payload.Images
+          : Array.isArray(payload?.data?.images)
+            ? payload.data.images
+            : [];
 
   return list.map((item, index) => {
     if (item == null) return null;
+
     if (typeof item === "string") {
+      const value = item.trim();
+      if (!value) return null;
+      const absolute = /^https?:\/\//i.test(value) ? value : null;
       return {
-        id: item,
-        imageName: item,
-        imageUrl: null,
+        id: value,
+        imageName: value,
+        imageUrl: absolute, // non-absolute paths are built by getImageUrl()
         raw: item,
-        key: item || `img-${index}`,
+        key: `${value}-${index}`,
       };
     }
+
     const imageName =
       item.imageName || item.ImageName || item.fileName || item.FileName ||
       item.name || item.Name || "";
@@ -374,6 +445,7 @@ export const toImageArray = (payload) => {
     const id =
       item.id || item.Id || item.imageID || item.ImageID ||
       item.imageCode || item.ImageCode || imageName || `img-${index}`;
+
     return {
       id,
       imageName,
@@ -384,14 +456,25 @@ export const toImageArray = (payload) => {
   }).filter(Boolean);
 };
 
+/* Best identifier to send to DeleteProductImage: the raw string the API gave
+   us, otherwise the image name, otherwise the id. */
+export const getImageIdentifier = (image) => {
+  if (!image) return "";
+  if (typeof image.raw === "string" && image.raw.trim()) return image.raw.trim();
+  if (image.imageName) return String(image.imageName).trim();
+  if (image.id) return String(image.id).trim();
+  return "";
+};
+
 export const fetchProductImages = createAsyncThunk(
   "products/fetchProductImages",
   async (code, { rejectWithValue }) => {
     try {
+      if (!code) throw new Error("A product code/ID is required to load images.");
       const response = await axiosInstance.get("/", {
         params: { endpoint: `/Product/GetProductImages/${code}` },
       });
-      return { code, images: toImageArray(response.data) };
+      return { code, images: toImageArray(response.data), raw: response.data };
     } catch (error) {
       return rejectWithValue(error.response?.data || error.message || "Failed to fetch product images");
     }
@@ -402,19 +485,47 @@ export const addProductImages = createAsyncThunk(
   "products/addProductImages",
   async ({ code, imageFiles }, { rejectWithValue }) => {
     try {
+      if (!code) throw new Error("A product code/ID is required to add images.");
+
       const files = (Array.isArray(imageFiles) ? imageFiles : [imageFiles]).filter(Boolean);
-      if (!files.length) {
-        return rejectWithValue("No image files selected");
-      }
+      if (!files.length) throw new Error("No image files selected.");
+
       const formData = new FormData();
+      // ✅ FIX: same field name for every file — matches OpenAPI `images`.
       files.forEach((file) => formData.append(IMAGE_FILE_FIELD, file));
+
+      /* Do NOT set Content-Type here: the browser (or axios 1.x) must add the
+         multipart boundary itself. A hand-written "multipart/form-data" header
+         without a boundary makes ASP.NET Core fail to parse the body — which
+         also produces "At least one image is required." */
       const response = await axiosInstance.post("/", formData, {
         params: { endpoint: `/Product/AddProductImages/${code}` },
-        headers: { "Content-Type": "multipart/form-data" },
+        headers: { accept: "*/*" },
       });
-      return { code, images: toImageArray(response.data), raw: response.data, count: files.length };
+
+      // HTTP 200 does not mean success — check the body before celebrating.
+      assertApiSuccess(response.data);
+
+      // The POST returns a status wrapper, not the gallery. Re-read the list so
+      // the store holds exactly what the server now has (no duplicated keys).
+      let images = null;
+      try {
+        const listResponse = await axiosInstance.get("/", {
+          params: { endpoint: `/Product/GetProductImages/${code}` },
+        });
+        images = toImageArray(listResponse.data);
+      } catch (refreshError) {
+        // Upload already succeeded; the panel can refresh manually.
+        console.warn("Images uploaded, but re-fetching the gallery failed:", refreshError);
+      }
+
+      return { code, images, raw: response.data, count: files.length };
     } catch (error) {
-      return rejectWithValue(error.response?.data || error.message || "Failed to add product images");
+      return rejectWithValue(
+        error?.response?.data
+          ? readMessage(error.response.data) || error.response.data
+          : error.message || "Failed to add product images"
+      );
     }
   }
 );
@@ -423,22 +534,36 @@ export const deleteProductImage = createAsyncThunk(
   "products/deleteProductImage",
   async ({ code, imageName, imageId }, { rejectWithValue }) => {
     try {
-      // The image to delete is identified by its name (and/or id) — sent both
-      // as query params and in the body so either binding style works.
-      const response = await axiosInstance.post(
-        "/",
-        { ImageName: imageName, ImageId: imageId },
-        {
-          params: {
-            endpoint: `/Product/DeleteProductImage/${code}`,
-            ImageName: imageName,
-            ImageId: imageId,
-          },
-        }
-      );
-      return { code, imageName, imageId, raw: response.data };
+      if (!code) throw new Error("A product code/ID is required to delete an image.");
+
+      // ✅ FIX: body is a JSON array of strings, not { ImageName, ImageId }.
+      const identifier = getImageIdentifier({ imageName, id: imageId, raw: imageName });
+      if (!identifier) throw new Error("No image name supplied.");
+
+      const response = await axiosInstance.post("/", [identifier], {
+        params: { endpoint: `/Product/DeleteProductImage/${code}` },
+        headers: { accept: "*/*", "Content-Type": "application/json" },
+      });
+
+      assertApiSuccess(response.data);
+
+      let images = null;
+      try {
+        const listResponse = await axiosInstance.get("/", {
+          params: { endpoint: `/Product/GetProductImages/${code}` },
+        });
+        images = toImageArray(listResponse.data);
+      } catch (refreshError) {
+        console.warn("Image deleted, but re-fetching the gallery failed:", refreshError);
+      }
+
+      return { code, imageName: identifier, imageId, images, raw: response.data };
     } catch (error) {
-      return rejectWithValue(error.response?.data || error.message || "Failed to delete product image");
+      return rejectWithValue(
+        error?.response?.data
+          ? readMessage(error.response.data) || error.response.data
+          : error.message || "Failed to delete product image"
+      );
     }
   }
 );
@@ -647,7 +772,7 @@ const productSlice = createSlice({
       })
       .addCase(fetchAllCTP002ProductVariants.rejected, () => {})
 
-      // ✅ NEW: product images — own flags, never touch state.loading/state.error
+      // ✅ product images — own flags, never touch state.loading/state.error
       .addCase(fetchProductImages.pending, (state) => {
         state.imagesLoading = true;
         state.imagesError = null;
@@ -668,11 +793,10 @@ const productSlice = createSlice({
       .addCase(addProductImages.fulfilled, (state, action) => {
         state.imagesLoading = false;
         const { code, images } = action.payload;
-        if (Array.isArray(images) && images.length) {
-          state.productImagesByCode[code] = [
-            ...(state.productImagesByCode[code] || []),
-            ...images,
-          ];
+        // The POST returns a status wrapper; when the follow-up GET succeeded
+        // we replace the list with the server's truth. Otherwise keep it.
+        if (Array.isArray(images)) {
+          state.productImagesByCode[code] = images;
         }
       })
       .addCase(addProductImages.rejected, (state, action) => {
@@ -686,11 +810,20 @@ const productSlice = createSlice({
       })
       .addCase(deleteProductImage.fulfilled, (state, action) => {
         state.imagesLoading = false;
-        const { code, imageName, imageId } = action.payload;
+        const { code, imageName, imageId, images } = action.payload;
+
+        if (Array.isArray(images)) {
+          state.productImagesByCode[code] = images;
+          return;
+        }
+
+        // Fallback: local removal if the follow-up GET failed.
         const list = state.productImagesByCode[code] || [];
         state.productImagesByCode[code] = list.filter((img) => {
           const idMatch = imageId != null && String(img.id) === String(imageId);
-          const nameMatch = !!imageName && img.imageName === imageName;
+          const nameMatch =
+            !!imageName &&
+            (img.imageName === imageName || img.id === imageName);
           return !idMatch && !nameMatch;
         });
       })

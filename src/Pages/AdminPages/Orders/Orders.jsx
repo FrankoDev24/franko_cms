@@ -9,7 +9,7 @@ import { Visibility, Edit, ContentCopy } from "@mui/icons-material";
 import dayjs from "dayjs";
 import * as XLSX from "xlsx";
 import { useDispatch, useSelector } from "react-redux";
-import { fetchOrdersByDate, fetchSalesOrderById } from "../../../Redux/Slice/orderSlice";
+import { fetchOrdersByDate } from "../../../Redux/Slice/orderSlice";
 import OrderDetailsModal from "./OrderDetailsModal";
 import CycleUpdateModal from "./CycleUpdateModal";
 
@@ -39,19 +39,6 @@ const agentNames = [
 const readFlag = (value, key) =>
   typeof value === "boolean" ? value : Boolean(value?.[key]);
 
-// True when a SalesOrderGet response carries no details (null/empty array/
-// empty object) — used to fall back to the alternate identifier.
-const isEmptyDetails = (payload) => {
-  if (payload == null || payload === "") return true;
-  if (Array.isArray(payload)) return payload.length === 0;
-  if (typeof payload === "object") {
-    const inner = payload.data ?? payload.result ?? payload;
-    if (Array.isArray(inner)) return inner.length === 0;
-    return typeof inner === "object" && Object.keys(inner).length === 0;
-  }
-  return false;
-};
-
 const Orders = () => {
   const dispatch = useDispatch();
   const {
@@ -69,12 +56,14 @@ const Orders = () => {
   );
 
   const listLoading = readFlag(loadingState, "orders");
-  const detailsLoading = readFlag(loadingState, "salesOrder");
   const fetchError = errorState?.orders ?? null;
-  // Loader is shown for BOTH list fetches and order-details fetches:
-  // "View Details" shows the centered loader over the blurred orders until
-  // the details arrive (see DIAGNOSIS.md §4).
-  const busy = listLoading || detailsLoading;
+
+  /* ✅ FIX: the table spinner is driven by the LIST request only.
+     It used to be `listLoading || detailsLoading`, so clicking "View Details"
+     blurred the whole table and threw a full-screen spinner for as long as the
+     sales-order (and delivery-address) requests took. The dialog now owns its
+     own loading state and renders that state inside itself. */
+  const busy = listLoading;
 
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
   const [searchText, setSearchText] = useState("");
@@ -86,6 +75,12 @@ const Orders = () => {
   const [selectAll, setSelectAll] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
+
+  // ✅ NEW: the whole row is handed to the details dialog so it can try every
+  // identifier (`_id`, `orderCode`) in parallel-ish and know the OrderCode for
+  // /Order/GetOrderDeliveryAddress without guessing.
+  const [selectedOrder, setSelectedOrder] = useState(null);
+
   const [selectedOrderCycle, setSelectedOrderCycle] = useState(null);
   const [isCycleModalOpen, setIsCycleModalOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -219,6 +214,7 @@ const Orders = () => {
   }, [dateRange, fetchOrdersForRange]);
 
   const handleCheckboxClick = useCallback((orderCode) => {
+    if (!orderCode) return;
     setSelectedCheckboxes(prev => ({ ...prev, [orderCode]: !prev[orderCode] }));
   }, []);
 
@@ -244,28 +240,28 @@ const Orders = () => {
     XLSX.writeFile(workbook, "Orders.xlsx");
   }, [filteredOrders]);
 
-  const openDetailModal = useCallback(async (order) => {
-    // SalesOrderGet may be keyed by `_id` OR `orderCode` — try each candidate
-    // and keep the one that actually returns details (then pass THAT id to the
-    // modal, in case the modal fetches by `orderId` itself).
-    const candidateIds = [...new Set([order._id, order.orderCode].filter(Boolean))];
-    const ids = candidateIds.length ? candidateIds : [order._id || order.orderCode];
+  /* ------------------------------------------------------------------------
+     ✅ FIX — "View Details" is now INSTANT.
 
-    let loadedId = ids[0];
-    for (const id of ids) {
-      loadedId = id;
-      const result = await dispatch(fetchSalesOrderById(id));
-      if (result?.error) {
-        console.error("Error fetching order details:", result.error);
-        continue; // try the alternate identifier
-      }
-      if (!isEmptyDetails(result?.payload)) break; // got real details
-    }
+     Before: this handler awaited SalesOrderGet for `_id`, maybe again for
+     `orderCode`, and only THEN called setIsDetailModalOpen(true). The dialog
+     could not exist until the network answered, so the click looked frozen and
+     then the dialog's own Promise.all waited on GetOrderDeliveryAddress too.
 
-    setSelectedOrderId(loadedId);
+     Now: open the dialog synchronously with the row we already have (it renders
+     the order code, customer, date immediately) and let the dialog fetch its
+     two endpoints independently, showing a skeleton in the meantime.
+     ------------------------------------------------------------------------ */
+  const openDetailModal = useCallback((order) => {
+    setSelectedOrder(order);
     setIsDetailModalOpen(true);
-    handleCheckboxClick(order.orderCode);
-  }, [dispatch, handleCheckboxClick]);
+    handleCheckboxClick(order?.orderCode);
+  }, [handleCheckboxClick]);
+
+  const closeDetailModal = useCallback(() => {
+    setIsDetailModalOpen(false);
+    setSelectedOrder(null);
+  }, []);
 
   const openCycleModal = useCallback((order) => {
     setSelectedOrderId(order._id || order.orderCode);
@@ -424,7 +420,7 @@ const Orders = () => {
 
       {/* Orders Table */}
       <TableContainer component={Paper} sx={{ position: 'relative', minHeight: 400 }}>
-        {/* Orders stay rendered (blurred) behind the loader — see DIAGNOSIS.md §4 */}
+        {/* Orders stay rendered (blurred) behind the loader while the LIST loads */}
         <Table
           sx={{
             filter: busy ? 'blur(2px)' : 'none',
@@ -583,7 +579,7 @@ const Orders = () => {
         )}
       </TableContainer>
 
-      {/* Loader — visibly in the middle of the screen, orders blurred behind */}
+      {/* Loader — visibly in the middle of the screen while the list loads */}
       {busy && (
         <Box
           sx={{
@@ -628,7 +624,12 @@ const Orders = () => {
 
       {/* Modals */}
       {isDetailModalOpen && (
-        <OrderDetailsModal orderId={selectedOrderId} onClose={() => setIsDetailModalOpen(false)} />
+        <OrderDetailsModal
+          order={selectedOrder}
+          orderId={selectedOrder?._id || selectedOrder?.orderCode || null}
+          orderCode={selectedOrder?.orderCode || null}
+          onClose={closeDetailModal}
+        />
       )}
 
       {isCycleModalOpen && (
