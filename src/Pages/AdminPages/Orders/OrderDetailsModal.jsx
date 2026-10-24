@@ -1,7 +1,25 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useDispatch } from 'react-redux';
-import { fetchSalesOrderById, fetchOrderDeliveryAddress } from '../../../Redux/Slice/orderSlice';
-import { Modal, Spin, Button, Image, Empty, Alert, Skeleton, Tooltip } from 'antd';
+import {
+  fetchSalesOrderById,
+  fetchOrderDeliveryAddress,
+} from '../../../Redux/Slice/orderSlice';
+import {
+  Modal,
+  Spin,
+  Button,
+  Image,
+  Empty,
+  Alert,
+  Skeleton,
+  Tooltip,
+} from 'antd';
 import {
   User,
   Phone,
@@ -60,13 +78,25 @@ import * as XLSX from 'xlsx';
  * ---------------------------------------------------------------- */
 let resolvedIdKind = null; // 'id' | 'code' | null
 
-export const buildCandidates = ({ order, orderId, orderCode, fallbackOrderId } = {}) => {
+export const buildCandidates = ({
+  order,
+  orderId,
+  orderCode,
+  fallbackOrderId,
+} = {}) => {
   const id =
-    order?._id || order?.orderID || order?.OrderId || order?.id ||
-    orderId || fallbackOrderId || null;
+    order?._id ||
+    order?.orderID ||
+    order?.OrderId ||
+    order?.id ||
+    orderId ||
+    fallbackOrderId ||
+    null;
+
   const code = order?.orderCode || order?.OrderCode || orderCode || null;
 
   const pairs = [];
+
   if (resolvedIdKind === 'code') {
     if (code) pairs.push({ value: code, kind: 'code' });
     if (id) pairs.push({ value: id, kind: 'id' });
@@ -77,9 +107,12 @@ export const buildCandidates = ({ order, orderId, orderCode, fallbackOrderId } =
 
   // Dedupe (orderId often equals orderCode) while keeping priority order.
   const seen = new Set();
+
   return pairs.filter(({ value }) => {
     const key = String(value);
+
     if (seen.has(key) || !key.trim()) return false;
+
     seen.add(key);
     return true;
   });
@@ -96,14 +129,18 @@ export const toItems = (value) => {
   if (value == null || value === '') return [];
 
   const inner = value.data ?? value.result ?? value.items ?? value;
+
   if (Array.isArray(inner)) return inner;
   if (!inner || typeof inner !== 'object') return [];
 
   const isStatusWrapper =
     inner.responseCode !== undefined || inner.ResponseCode !== undefined;
+
   const looksLikeItem =
-    inner.productName !== undefined || inner.ProductName !== undefined ||
-    inner.id !== undefined || inner.Id !== undefined;
+    inner.productName !== undefined ||
+    inner.ProductName !== undefined ||
+    inner.id !== undefined ||
+    inner.Id !== undefined;
 
   if (isStatusWrapper && !looksLikeItem) return [];
 
@@ -113,8 +150,10 @@ export const toItems = (value) => {
 const pickText = (source, ...keys) => {
   for (const key of keys) {
     const value = source?.[key];
+
     if (value != null && value !== '') return value;
   }
+
   return '';
 };
 
@@ -122,49 +161,111 @@ const pickText = (source, ...keys) => {
  * object, or a status wrapper. Normalize to an object or null. */
 export const toAddress = (payload) => {
   if (!payload) return null;
+
   let candidate = null;
 
   if (Array.isArray(payload)) {
     candidate = payload[0] || null;
   } else if (typeof payload === 'object') {
-    if (Array.isArray(payload.data)) candidate = payload.data[0] || null;
-    else if (Array.isArray(payload.result)) candidate = payload.result[0] || null;
-    else if (payload.data && typeof payload.data === 'object') candidate = payload.data;
-    else candidate = payload;
+    if (Array.isArray(payload.data)) {
+      candidate = payload.data[0] || null;
+    } else if (Array.isArray(payload.result)) {
+      candidate = payload.result[0] || null;
+    } else if (payload.data && typeof payload.data === 'object') {
+      candidate = payload.data;
+    } else {
+      candidate = payload;
+    }
   }
 
   if (!candidate || typeof candidate !== 'object') return null;
 
   const normalized = {
-    recipientName: pickText(candidate, 'recipientName', 'RecipientName', 'fullName', 'FullName'),
-    recipientContactNumber: pickText(candidate, 'recipientContactNumber', 'RecipientContactNumber', 'contactNumber', 'ContactNumber', 'phone'),
-    address: pickText(candidate, 'address', 'Address', 'deliveryAddress', 'DeliveryAddress'),
-    orderNote: pickText(candidate, 'orderNote', 'OrderNote', 'note', 'Note'),
+    recipientName: pickText(
+      candidate,
+      'recipientName',
+      'RecipientName',
+      'fullName',
+      'FullName'
+    ),
+    recipientContactNumber: pickText(
+      candidate,
+      'recipientContactNumber',
+      'RecipientContactNumber',
+      'contactNumber',
+      'ContactNumber',
+      'phone'
+    ),
+    address: pickText(
+      candidate,
+      'address',
+      'Address',
+      'deliveryAddress',
+      'DeliveryAddress'
+    ),
+    orderNote: pickText(
+      candidate,
+      'orderNote',
+      'OrderNote',
+      'note',
+      'Note'
+    ),
   };
 
-  const hasContent = Object.values(normalized).some((v) => v !== '');
+  const hasContent = Object.values(normalized).some((value) => value !== '');
+
   return hasContent ? normalized : null;
 };
 
 const readErrorText = (error, fallback = '') => {
   if (!error) return fallback;
   if (typeof error === 'string') return error;
+
   return error.message || error.responseMessage || fallback;
 };
 
-const toNumber = (v) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+const toNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 };
 
 const formatPrice = (amount) =>
   String(toNumber(amount)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
+/**
+ * Returns a tag only when it contains meaningful, non-numeric text.
+ *
+ * Examples:
+ * "53274769"  -> hidden
+ * 53274769    -> hidden
+ * ""          -> hidden
+ * null        -> hidden
+ * "VIP"       -> displayed
+ * "URGENT-02" -> displayed
+ */
+const getDisplayTag = (item) => {
+  const value = item?.tag ?? item?.Tag;
+
+  if (value == null) return '';
+
+  const tag = String(value).trim();
+
+  // Hide empty values and numeric tags.
+  if (!tag || Number.isFinite(Number(tag))) return '';
+
+  return tag;
+};
+
 const backendBaseURL = 'https://cms.frankotrading.com';
 
-const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose }) => {
+const OrderDetailsModal = ({
+  order,
+  orderId,
+  orderCode,
+  fallbackOrderId,
+  onClose,
+}) => {
   const dispatch = useDispatch();
-
   const printRef = useRef();
 
   /* ------------------------- order details ------------------------- */
@@ -181,25 +282,41 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
   const [addressRetry, setAddressRetry] = useState(0);
 
   const candidates = useMemo(
-    () => buildCandidates({ order, orderId, orderCode, fallbackOrderId }),
+    () =>
+      buildCandidates({
+        order,
+        orderId,
+        orderCode,
+        fallbackOrderId,
+      }),
     [order, orderId, orderCode, fallbackOrderId]
   );
 
-  // Stable primitive for the effect deps (the array identity changes each render).
-  const candidatesKey = candidates.map((c) => `${c.kind}:${c.value}`).join('|');
+  // Stable primitive for the effect deps.
+  const candidatesKey = candidates
+    .map((candidate) => `${candidate.kind}:${candidate.value}`)
+    .join('|');
 
   // {OrderCode} for the address endpoint — the business code, never the _id
   // unless no code exists at all.
   const deliveryCode = useMemo(() => {
     const code = order?.orderCode || order?.OrderCode || orderCode;
+
     if (code) return code;
+
     const anyId = candidates[0]?.value;
     return anyId || null;
   }, [order, orderCode, candidates]);
 
   const rowOrderDate = order?.orderDate || order?.OrderDate || null;
+
   const headerCode =
-    order?.orderCode || orderCode || resolvedId || orderId || fallbackOrderId || 'N/A';
+    order?.orderCode ||
+    orderCode ||
+    resolvedId ||
+    orderId ||
+    fallbackOrderId ||
+    'N/A';
 
   /* ------------------------------------------------------------------
      /Order/SalesOrderGet/{Orderid}
@@ -210,8 +327,12 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
 
     const list = candidatesKey
       ? candidatesKey.split('|').map((pair) => {
-          const sep = pair.indexOf(':');
-          return { kind: pair.slice(0, sep), value: pair.slice(sep + 1) };
+          const separatorIndex = pair.indexOf(':');
+
+          return {
+            kind: pair.slice(0, separatorIndex),
+            value: pair.slice(separatorIndex + 1),
+          };
         })
       : [];
 
@@ -229,26 +350,37 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
       let found = null;
 
       for (const candidate of list) {
-        const result = await dispatch(fetchSalesOrderById(candidate.value));
+        const result = await dispatch(
+          fetchSalesOrderById(candidate.value)
+        );
+
         if (!alive) return;
 
         if (result?.error) {
-          lastError = readErrorText(result.payload, 'Failed to fetch sales order');
-          continue; // try the alternate identifier
+          lastError = readErrorText(
+            result.payload,
+            'Failed to fetch sales order'
+          );
+          continue;
         }
 
         const nextItems = toItems(result?.payload);
+
         if (nextItems.length) {
-          found = { ...candidate, items: nextItems };
-          break; // real details — stop probing
+          found = {
+            ...candidate,
+            items: nextItems,
+          };
+          break;
         }
-        // Empty but successful: remember nothing, try the next identifier.
+
+        // Empty but successful: try the next identifier.
       }
 
       if (!alive) return;
 
       if (found) {
-        resolvedIdKind = found.kind; // remember what worked for next time
+        resolvedIdKind = found.kind;
         setItems(found.items);
         setResolvedId(found.value);
         setDetailsError(null);
@@ -256,6 +388,7 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
         setItems([]);
         setDetailsError(lastError || null);
       }
+
       setDetailsLoading(false);
     })();
 
@@ -277,17 +410,25 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
     }
 
     let alive = true;
+
     setAddressLoading(true);
     setAddressError(null);
 
     dispatch(fetchOrderDeliveryAddress(deliveryCode))
       .then((result) => {
         if (!alive) return;
+
         if (result?.error) {
           setAddress(null);
-          setAddressError(readErrorText(result.payload, 'Could not load the delivery address.'));
+          setAddressError(
+            readErrorText(
+              result.payload,
+              'Could not load the delivery address.'
+            )
+          );
           return;
         }
+
         setAddress(toAddress(result?.payload));
       })
       .finally(() => {
@@ -300,17 +441,27 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
   }, [dispatch, deliveryCode, addressRetry]);
 
   const totalAmount = useMemo(
-    () => items.reduce((acc, item) => acc + toNumber(item?.total ?? item?.Total), 0),
+    () =>
+      items.reduce(
+        (accumulator, item) =>
+          accumulator + toNumber(item?.total ?? item?.Total),
+        0
+      ),
     [items]
   );
 
-  const hasData = !detailsLoading && !detailsError && items.length > 0;
+  const hasData =
+    !detailsLoading && !detailsError && items.length > 0;
 
   const handlePrint = () => {
     const printContent = printRef.current;
+
     if (!printContent) return;
+
     const newWindow = window.open('', '_blank');
+
     if (!newWindow) return;
+
     newWindow.document.write(printContent.innerHTML);
     newWindow.document.close();
     newWindow.print();
@@ -319,12 +470,19 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
 
   const exportToExcel = () => {
     if (!items.length) return;
+
     const invoiceData = [
       ['Invoice Details'],
       ['Order No', String(headerCode).slice(-7) || 'N/A'],
       ['Order Date', new Date().toLocaleDateString('en-GB')],
       [],
-      ['S.NO', 'Product Name', 'Quantity', 'Unit Price (₵)', 'Total Price (₵)'],
+      [
+        'S.NO',
+        'Product Name',
+        'Quantity',
+        'Unit Price (₵)',
+        'Total Price (₵)',
+      ],
       ...items.map((item, index) => [
         index + 1,
         item.productName ?? item.ProductName,
@@ -333,18 +491,39 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
         item.total ?? item.Total,
       ]),
     ];
-    const ws = XLSX.utils.aoa_to_sheet(invoiceData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Invoice');
-    const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const data = new Blob([excelBuffer], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+
+    const worksheet = XLSX.utils.aoa_to_sheet(invoiceData);
+    const workbook = XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      'Invoice'
+    );
+
+    const excelBuffer = XLSX.write(workbook, {
+      bookType: 'xlsx',
+      type: 'array',
     });
-    saveAs(data, `Invoice_${String(headerCode).slice(-7) || 'Unknown'}.xlsx`);
+
+    const data = new Blob([excelBuffer], {
+      type:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+
+    saveAs(
+      data,
+      `Invoice_${String(headerCode).slice(-7) || 'Unknown'}.xlsx`
+    );
   };
 
-  const retryDetails = useCallback(() => setDetailsRetry((t) => t + 1), []);
-  const retryAddress = useCallback(() => setAddressRetry((t) => t + 1), []);
+  const retryDetails = useCallback(() => {
+    setDetailsRetry((retry) => retry + 1);
+  }, []);
+
+  const retryAddress = useCallback(() => {
+    setAddressRetry((retry) => retry + 1);
+  }, []);
 
   /* ------------------------- delivery card ------------------------- */
   const deliveryCardBody = addressLoading ? (
@@ -352,7 +531,12 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
   ) : addressError ? (
     <div className="text-sm text-gray-600">
       <div className="text-red-600 mb-2">{addressError}</div>
-      <Button size="small" onClick={retryAddress} icon={<RotateCcw className="w-3.5 h-3.5" />}>
+
+      <Button
+        size="small"
+        onClick={retryAddress}
+        icon={<RotateCcw className="w-3.5 h-3.5" />}
+      >
         Retry
       </Button>
     </div>
@@ -360,37 +544,56 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
     <div className="space-y-3">
       <div className="flex items-start space-x-3">
         <User className="w-4 h-4 text-red-600 mt-1" />
+
         <div>
-          <div className="text-sm text-gray-500">Recipient Name</div>
-          <div className="font-medium text-gray-900">{address.recipientName || '—'}</div>
+          <div className="text-sm text-gray-500">
+            Recipient Name
+          </div>
+          <div className="font-medium text-gray-900">
+            {address.recipientName || '—'}
+          </div>
         </div>
       </div>
+
       <div className="flex items-start space-x-3">
         <Phone className="w-4 h-4 text-red-600 mt-1" />
+
         <div>
           <div className="text-sm text-gray-500">Contact</div>
-          <div className="font-medium text-gray-900">{address.recipientContactNumber || '—'}</div>
+          <div className="font-medium text-gray-900">
+            {address.recipientContactNumber || '—'}
+          </div>
         </div>
       </div>
+
       <div className="flex items-start space-x-3">
         <MapPin className="w-4 h-4 text-red-600 mt-1" />
+
         <div>
           <div className="text-sm text-gray-500">Address</div>
-          <div className="font-medium text-gray-900">{address.address || '—'}</div>
+          <div className="font-medium text-gray-900">
+            {address.address || '—'}
+          </div>
         </div>
       </div>
+
       {address.orderNote && (
         <div className="flex items-start space-x-3">
           <Edit3 className="w-4 h-4 text-red-600 mt-1" />
+
           <div>
             <div className="text-sm text-gray-500">Note</div>
-            <div className="font-medium text-gray-900">{address.orderNote}</div>
+            <div className="font-medium text-gray-900">
+              {address.orderNote}
+            </div>
           </div>
         </div>
       )}
     </div>
   ) : (
-    <div className="text-gray-500 italic">No delivery address available.</div>
+    <div className="text-gray-500 italic">
+      No delivery address available.
+    </div>
   );
 
   /* --------------------------- order items ------------------------- */
@@ -400,6 +603,7 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
         <Spin size="small" />
         <span>Loading order items…</span>
       </div>
+
       <Skeleton active avatar paragraph={{ rows: 2 }} />
       <Skeleton active avatar paragraph={{ rows: 2 }} />
     </div>
@@ -411,7 +615,11 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
         message="Could not load order details"
         description={detailsError}
         action={
-          <Button size="small" onClick={retryDetails} icon={<RotateCcw className="w-4 h-4" />}>
+          <Button
+            size="small"
+            onClick={retryDetails}
+            icon={<RotateCcw className="w-4 h-4" />}
+          >
             Retry
           </Button>
         }
@@ -419,18 +627,32 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
     </div>
   ) : items.length === 0 ? (
     <div className="p-8">
-      <Empty description={`No order details found for ${headerCode}.`} />
+      <Empty
+        description={`No order details found for ${headerCode}.`}
+      />
     </div>
   ) : (
     <div className="p-2 space-y-4">
       {items.map((item, index) => {
         const imagePath = item?.imagePath || item?.ImagePath;
+
         const imageUrl = imagePath
-          ? `${backendBaseURL}/Media/Products_Images/${String(imagePath).split('\\').pop()}`
+          ? `${backendBaseURL}/Media/Products_Images/${String(
+              imagePath
+            )
+              .split('\\')
+              .pop()}`
           : null;
 
+        // Numeric tags such as "53274769" return an empty string
+        // and therefore will not be rendered.
+        const displayTag = getDisplayTag(item);
+
         return (
-          <div key={item?.id || item?.Id || index} className="rounded-lg p-2 hover:bg-gray-100 transition-colors">
+          <div
+            key={item?.id || item?.Id || index}
+            className="rounded-lg p-2 hover:bg-gray-100 transition-colors"
+          >
             <div className="flex space-x-4">
               <div className="flex-shrink-0">
                 {imageUrl ? (
@@ -453,21 +675,41 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
                 <h4 className="text-md font-semibold text-gray-900 mb-1">
                   {item.productName ?? item.ProductName}
                 </h4>
+
+                {/* Show only meaningful, non-numeric tags. */}
+                {displayTag && (
+                  <div className="mb-2">
+                    <span className="inline-flex items-center rounded-full bg-amber-100 border border-amber-200 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+                      Tag: {displayTag}
+                    </span>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
-                    <div className="text-sm text-gray-600">Quantity</div>
-                    <div className="font-medium text-gray-900">{item.quantity ?? item.Quantity}</div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-600">Unit Price</div>
+                    <div className="text-sm text-gray-600">
+                      Quantity
+                    </div>
                     <div className="font-medium text-gray-900">
-                      ₵{formatPrice(item.price ?? item.Price)}
+                      {item.quantity ?? item.Quantity}
                     </div>
                   </div>
+
                   <div>
-                    <div className="text-sm text-gray-600">Total</div>
+                    <div className="text-sm text-gray-600">
+                      Unit Price
+                    </div>
+                    <div className="font-medium text-gray-900">
+                      ₵{formatPrice(item.price ?? item.Price)}.00
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm text-gray-600">
+                      Total
+                    </div>
                     <div className="font-bold text-red-600 text-lg">
-                      ₵{formatPrice(item.total ?? item.Total)}
+                      ₵{formatPrice(item.total ?? item.Total)}.00
                     </div>
                   </div>
                 </div>
@@ -480,10 +722,20 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
   );
 
   const customerSource = items[0] || {};
-  const customerName = customerSource.fullName ?? customerSource.FullName;
-  const customerContact = customerSource.contactNumber ?? customerSource.ContactNumber;
-  const customerAddress = customerSource.address ?? customerSource.Address;
-  const orderDate = customerSource.orderDate ?? customerSource.OrderDate ?? rowOrderDate;
+
+  const customerName =
+    customerSource.fullName ?? customerSource.FullName;
+
+  const customerContact =
+    customerSource.contactNumber ?? customerSource.ContactNumber;
+
+  const customerAddress =
+    customerSource.address ?? customerSource.Address;
+
+  const orderDate =
+    customerSource.orderDate ??
+    customerSource.OrderDate ??
+    rowOrderDate;
 
   return (
     <Modal
@@ -495,7 +747,9 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
       style={{ top: 20 }}
       destroyOnClose
       maskClosable
-      closeIcon={<X className="w-5 h-5 text-gray-500 hover:text-red-500 transition-colors cursor-pointer" />}
+      closeIcon={
+        <X className="w-5 h-5 text-gray-500 hover:text-red-500 transition-colors cursor-pointer" />
+      }
     >
       <div className="bg-white">
         {/* Header — rendered immediately from the row we already have */}
@@ -505,85 +759,132 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
               <div className="bg-white/20 p-2 rounded-lg">
                 <FileText className="w-6 h-6" />
               </div>
+
               <div>
-                <h2 className="text-xl font-bold">Order Details</h2>
+                <h2 className="text-xl font-bold">
+                  Order Details
+                </h2>
+
                 <div className="flex items-center space-x-2 text-green-100 text-sm">
                   <Clock className="w-4 h-4" />
-                  <span>{orderDate ? new Date(orderDate).toLocaleString() : '—'}</span>
+                  <span>
+                    {orderDate
+                      ? new Date(orderDate).toLocaleString()
+                      : '—'}
+                  </span>
                 </div>
               </div>
             </div>
+
             <div className="text-right">
-              <div className="text-green-100 text-sm">Order Code</div>
-              <div className="font-mono text-lg">{headerCode}</div>
+              <div className="text-green-100 text-sm">
+                Order Code
+              </div>
+              <div className="font-mono text-lg">
+                {headerCode}
+              </div>
             </div>
           </div>
         </div>
 
         {/* Content */}
-        <div className="max-h-[70vh] overflow-y-auto p-6 space-y-6" style={{ scrollbarWidth: 'thin' }}>
-          {/* Customer & Delivery Info Grid — two INDEPENDENT loading states */}
+        <div
+          className="max-h-[70vh] overflow-y-auto p-6 space-y-6"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          {/* Customer & Delivery Info Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Customer Information (depends on the details request) */}
+            {/* Customer Information */}
             <div className="bg-green-50 border border-green-200 rounded-xl p-5">
               <div className="flex items-center space-x-2 mb-2">
                 <div className="bg-green-500 p-2 rounded-lg">
                   <User className="w-4 h-4 text-white" />
                 </div>
-                <h3 className="text-md font-semibold text-green-800">Customer/Agent Information</h3>
+
+                <h3 className="text-md font-semibold text-green-800">
+                  Customer/Agent Information
+                </h3>
               </div>
 
               {detailsLoading ? (
-                <Skeleton active paragraph={{ rows: 3 }} title={false} />
+                <Skeleton
+                  active
+                  paragraph={{ rows: 3 }}
+                  title={false}
+                />
               ) : (
                 <div className="space-y-3">
                   <div className="flex items-start space-x-3">
                     <User className="w-4 h-4 text-green-600 mt-1" />
+
                     <div>
-                      <div className="text-sm text-gray-500">Name</div>
-                      <div className="font-medium text-gray-900">{customerName || '—'}</div>
+                      <div className="text-sm text-gray-500">
+                        Name
+                      </div>
+                      <div className="font-medium text-gray-900">
+                        {customerName || '—'}
+                      </div>
                     </div>
                   </div>
+
                   <div className="flex items-start space-x-3">
                     <Phone className="w-4 h-4 text-green-600 mt-1" />
+
                     <div>
-                      <div className="text-sm text-gray-500">Contact</div>
-                      <div className="font-medium text-gray-900">{customerContact || '—'}</div>
+                      <div className="text-sm text-gray-500">
+                        Contact
+                      </div>
+                      <div className="font-medium text-gray-900">
+                        {customerContact || '—'}
+                      </div>
                     </div>
                   </div>
+
                   <div className="flex items-start space-x-3">
                     <MapPin className="w-4 h-4 text-green-600 mt-1" />
+
                     <div>
-                      <div className="text-sm text-gray-500">Address</div>
-                      <div className="font-medium text-gray-900">{customerAddress || '—'}</div>
+                      <div className="text-sm text-gray-500">
+                        Address
+                      </div>
+                      <div className="font-medium text-gray-900">
+                        {customerAddress || '—'}
+                      </div>
                     </div>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Delivery Address (independent of the details request) */}
+            {/* Delivery Address */}
             <div className="bg-red-50 border border-red-200 rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center space-x-2">
                   <div className="bg-red-500 p-2 rounded-lg">
                     <Truck className="w-4 h-4 text-white" />
                   </div>
-                  <h3 className="text-md font-semibold text-red-800">Delivery Address</h3>
+
+                  <h3 className="text-md font-semibold text-red-800">
+                    Delivery Address
+                  </h3>
                 </div>
-                {!addressLoading && !addressError && address && (
-                  <Tooltip title="Reload address">
-                    <button
-                      type="button"
-                      onClick={retryAddress}
-                      className="text-red-400 hover:text-red-600"
-                      aria-label="Reload address"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                    </button>
-                  </Tooltip>
-                )}
+
+                {!addressLoading &&
+                  !addressError &&
+                  address && (
+                    <Tooltip title="Reload address">
+                      <button
+                        type="button"
+                        onClick={retryAddress}
+                        className="text-red-400 hover:text-red-600"
+                        aria-label="Reload address"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                    </Tooltip>
+                  )}
               </div>
+
               {deliveryCardBody}
             </div>
           </div>
@@ -595,14 +896,20 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
                 <div className="bg-gray-600 p-2 rounded-lg">
                   <ShoppingCart className="w-4 h-4 text-white" />
                 </div>
-                <h3 className="text-lg font-semibold text-gray-600">Order Items</h3>
+
+                <h3 className="text-lg font-semibold text-gray-600">
+                  Order Items
+                </h3>
+
                 {!detailsLoading && !detailsError && (
                   <span className="bg-green-100 text-green-700 px-2 py-1 rounded-full text-sm font-medium">
-                    {items.length} item{items.length === 1 ? '' : 's'}
+                    {items.length} item
+                    {items.length === 1 ? '' : 's'}
                   </span>
                 )}
               </div>
             </div>
+
             {itemsSection}
           </div>
 
@@ -614,9 +921,14 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
                   <div className="bg-red-100 p-2 rounded-lg">
                     <CreditCard className="w-5 h-5 text-red-500" />
                   </div>
+
                   <div className="text-right">
-                    <div className="text-xs text-red-300 font-semibold">Grand Total</div>
-                    <div className="text-xl font-bold text-red-600">₵{formatPrice(totalAmount)}</div>
+                    <div className="text-xs text-red-300 font-semibold">
+                      Grand Total
+                    </div>
+                    <div className="text-xl font-bold text-red-600">
+                      ₵{formatPrice(totalAmount)}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -662,26 +974,48 @@ const OrderDetailsModal = ({ order, orderId, orderCode, fallbackOrderId, onClose
       {/* Hidden Printable Invoice */}
       {hasData && (
         <div ref={printRef} style={{ display: 'none' }}>
-          <PrintableInvoice orderId={headerCode} salesOrder={items} deliveryAddress={address} />
+          <PrintableInvoice
+            orderId={headerCode}
+            salesOrder={items}
+            deliveryAddress={address}
+          />
         </div>
       )}
 
       {/* Plain <style> instead of <style jsx> — styled-jsx only works when the
-          build supports it (Next.js, or the styled-jsx babel plugin). If your
-          app is Vite/CRA without that plugin, `<style jsx>` is a silent no-op /
-          a build error and these rules never reach the DOM. */}
+          build supports it (Next.js, or the styled-jsx babel plugin). */}
       <style>{`
         .modern-order-modal .ant-modal-content {
           border-radius: 12px;
           overflow: hidden;
           box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
         }
-        .modern-order-modal .ant-modal-header { border: none; padding: 0; }
-        .modern-order-modal .ant-modal-body { padding: 0; }
-        .modern-order-modal ::-webkit-scrollbar { width: 6px; }
-        .modern-order-modal ::-webkit-scrollbar-track { background: #f1f1f1; }
-        .modern-order-modal ::-webkit-scrollbar-thumb { background: #10b981; border-radius: 3px; }
-        .modern-order-modal ::-webkit-scrollbar-thumb:hover { background: #059669; }
+
+        .modern-order-modal .ant-modal-header {
+          border: none;
+          padding: 0;
+        }
+
+        .modern-order-modal .ant-modal-body {
+          padding: 0;
+        }
+
+        .modern-order-modal ::-webkit-scrollbar {
+          width: 6px;
+        }
+
+        .modern-order-modal ::-webkit-scrollbar-track {
+          background: #f1f1f1;
+        }
+
+        .modern-order-modal ::-webkit-scrollbar-thumb {
+          background: #10b981;
+          border-radius: 3px;
+        }
+
+        .modern-order-modal ::-webkit-scrollbar-thumb:hover {
+          background: #059669;
+        }
       `}</style>
     </Modal>
   );
