@@ -927,7 +927,7 @@ const OrderDetailsModal = ({
                       Grand Total
                     </div>
                     <div className="text-xl font-bold text-red-600">
-                      ₵{formatPrice(totalAmount)}
+                      ₵{formatPrice(totalAmount)}.00
                     </div>
                   </div>
                 </div>
