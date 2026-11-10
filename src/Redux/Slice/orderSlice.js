@@ -1,61 +1,116 @@
 // src/Redux/Slice/orderSlice.js
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
+import dayjs from "dayjs";
 import axiosInstance from "./AxiosInstance";
 
-// Optional helper to normalize error payloads (same pattern as adverts/products)
+/* --------------------------------------------------------------------------
+   ✅ ROOT-CAUSE FIX for "timeout of 30000ms exceeded" while Network shows 200:
+
+   The shared axios instance aborts at 30s. GetOrdersByDate for a whole month
+   can take longer than that to stream its body, so axios rejects BEFORE the
+   200 response finishes downloading.
+
+   Fix strategy (list endpoint only):
+     • Override `timeout` per request (request config wins over instance config).
+     • Split the range into small chunks so each response is fast.
+     • Retry a failed chunk once (GET is idempotent).
+     • Push each chunk into the store as it arrives → the table fills
+       progressively instead of waiting for the slowest window.
+   -------------------------------------------------------------------------- */
+const LIST_TIMEOUT_MS = 90000; // was effectively 30000 via the instance
+const LIST_RETRIES = 1;        // one extra attempt per chunk
+const CHUNK_DAYS = 7;          // weekly windows
+const MAX_PARALLEL = 3;        // don't hammer the API
+
 const toErrorPayload = (error, fallback) => {
   const server =
-    error.response?.data?.message ??
-    (typeof error.response?.data === "string" ? error.response.data : null);
-  return server || error.message || fallback;
+    error?.response?.data?.message ??
+    (typeof error?.response?.data === "string" ? error.response.data : null);
+  return server || error?.message || fallback;
 };
 
 // Normalize any API payload into a plain array of orders.
-// The endpoint does not always return a bare array (see DIAGNOSIS.md §3.4):
-// it may wrap results ({ data: [...] } / { orders: [...] }), return a single
-// order object, or return null/undefined on an empty 200 response.
 export const toOrderArray = (payload) => {
   if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.orders)) return payload.orders;
-  if (Array.isArray(payload?.result)) return payload.result;
-  if (
-    payload &&
-    typeof payload === "object" &&
-    (payload.orderCode || payload.OrderCode || payload._id)
-  ) {
-    return [payload];
-  }
+  if (!payload || typeof payload !== "object") return [];
+  const candidates = [
+    payload.data, payload.orders, payload.result,
+    payload.Data, payload.Orders, payload.Result,
+    payload.data?.orders, payload.data?.data, payload.result?.orders,
+  ];
+  for (const c of candidates) if (Array.isArray(c)) return c;
+  if (payload.orderCode || payload.OrderCode || payload._id) return [payload];
   return [];
 };
 
-// Unwrap a single-object payload that may be nested under data/result.
 const unwrap = (payload) => payload?.data ?? payload?.result ?? payload;
 
-// ---------------------------------------------------------------------------
-// Loading / error COMPATIBILITY LAYER
-//
-// Consumers (OrderDetailsModal, CycleUpdateModal, checkout screens, ...)
-// historically treat `state.loading` / `state.error` as plain booleans:
-//
-//   if (loading) return null;                 // or <Spinner/>
-//   disabled={loading}
-//   if (error) show error
-//
-// To keep every one of those consumers working while still exposing
-// per-domain flags (loading.orders, loading.salesOrder, ...):
-//
-//   • when NOTHING is active:  state.loading === false, state.error === null
-//   • when something IS active: they become objects with per-domain keys
-//
-// This is why the details modal went blank when `loading` became a stable
-// always-truthy object: `if (loading) return null` never rendered content
-// (DIAGNOSIS.md §9).
-//
-// NEVER assign to state.loading / state.error directly — always go through
-// setLoadingFlag / setErrorFlag so the idle value stays falsy and immer never
-// sees `false.orders = true` (which throws).
-// ---------------------------------------------------------------------------
+// Stable identity for dedupe across chunks (never depend on orderCode existing).
+const orderKey = (o) =>
+  o?.orderCode ?? o?.OrderCode ?? o?._id ?? o?.id ??
+  `${o?.fullName ?? ""}|${o?.orderDate ?? ""}|${o?.contactNumber ?? ""}`;
+
+const isCanceled = (e) =>
+  e?.code === "ERR_CANCELED" ||
+  e?.name === "CanceledError" ||
+  e?.name === "AbortError";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// `to` is exclusive (callers pass end + 1 day) — keep that semantics.
+const buildChunks = (from, to) => {
+  const start = dayjs(from);
+  const end = dayjs(to);
+  if (!start.isValid() || !end.isValid() || !end.isAfter(start)) {
+    return [[from, to]];
+  }
+  const chunks = [];
+  let cur = start;
+  while (cur.isBefore(end)) {
+    const next = cur.add(CHUNK_DAYS, "day");
+    const chunkEnd = next.isAfter(end) ? end : next;
+    chunks.push([cur.format("YYYY-MM-DD"), chunkEnd.format("YYYY-MM-DD")]);
+    cur = chunkEnd;
+  }
+  return chunks;
+};
+
+const fetchChunk = async (from, to, signal) => {
+  let lastErr;
+  for (let attempt = 0; attempt <= LIST_RETRIES; attempt++) {
+    try {
+      const { data } = await axiosInstance.get("/", {
+        params: { endpoint: `/Order/GetOrdersByDate/${from}/${to}` },
+        timeout: LIST_TIMEOUT_MS, // ✅ overrides the instance's 30000
+        signal,
+      });
+      return data;
+    } catch (e) {
+      if (isCanceled(e) || signal?.aborted) throw e;
+      lastErr = e;
+      if (attempt < LIST_RETRIES) await sleep(700 * (attempt + 1));
+    }
+  }
+  throw lastErr;
+};
+
+/* --------------------------------------------------------------------------
+   Loading / error COMPATIBILITY LAYER (unchanged contract):
+   idle → loading === false, error === null; active → keyed objects.
+   Always mutate through these helpers so immer never sees `false.orders = true`.
+   -------------------------------------------------------------------------- */
+const initialLoading = {
+  orders: false, salesOrder: false, checkout: false, transition: false,
+  lifeCycle: false, deliveryAddress: false, deliveryAddressFetch: false,
+  deliveryUpdate: false,
+};
+
+const initialError = {
+  orders: null, salesOrder: null, checkout: null, transition: null,
+  lifeCycle: null, deliveryAddress: null, deliveryAddressFetch: null,
+  deliveryUpdate: null,
+};
+
 const setLoadingFlag = (state, key, value) => {
   const current =
     state.loading && typeof state.loading === "object"
@@ -74,47 +129,54 @@ const setErrorFlag = (state, key, value) => {
   state.error = Object.values(next).some((v) => v != null) ? next : null;
 };
 
-const initialLoading = {
-  orders: false,
-  salesOrder: false,
-  checkout: false,
-  transition: false,
-  lifeCycle: false,
-  deliveryAddress: false,
-  // ✅ NEW: the delivery-address GET is tracked separately from the
-  // delivery-address POST (`deliveryAddress`). Mixing them meant a slow/failed
-  // read could flip the same flag a save was using.
-  deliveryAddressFetch: false,
-  deliveryUpdate: false,
-};
-
-const initialError = {
-  orders: null,
-  salesOrder: null,
-  checkout: null,
-  transition: null,
-  lifeCycle: null,
-  deliveryAddress: null,
-  deliveryAddressFetch: null,
-  deliveryUpdate: null,
-};
-
-// Async thunks
+/* --------------------------------------------------------------------------
+   Thunks
+   -------------------------------------------------------------------------- */
 export const fetchOrdersByDate = createAsyncThunk(
   "orders/fetchOrdersByDate",
-  async ({ from, to }, { rejectWithValue }) => {
+  async ({ from, to }, { dispatch, signal, requestId, rejectWithValue }) => {
+    const chunks = buildChunks(from, to);
+    let cursor = 0;
+    let done = 0;
+    let okChunks = 0;
+    const failures = [];
+
+    const worker = async () => {
+      while (cursor < chunks.length) {
+        const [cFrom, cTo] = chunks[cursor++];
+        let incoming = [];
+        try {
+          const data = await fetchChunk(cFrom, cTo, signal);
+          incoming = toOrderArray(data);
+          okChunks++;
+        } catch (e) {
+          if (isCanceled(e) || signal.aborted) throw e; // superseded / unmounted
+          failures.push(e);
+        }
+        done++;
+        // ✅ Progressive update: rows show up as each window resolves.
+        dispatch(
+          orderSlice.actions.ordersChunkResult({
+            requestId, orders: incoming, done, total: chunks.length,
+          })
+        );
+      }
+    };
+
     try {
-      const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: `/Order/GetOrdersByDate/${from}/${to}`,
-        },
-      });
-      return data;
-    } catch (error) {
+      await Promise.all(
+        Array.from({ length: Math.min(MAX_PARALLEL, chunks.length) }, worker)
+      );
+    } catch {
+      return rejectWithValue({ aborted: true, message: "Request cancelled" });
+    }
+
+    if (okChunks === 0 && failures.length) {
       return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch orders by date")
+        toErrorPayload(failures[0], "Failed to fetch orders by date")
       );
     }
+    return { from, to, failedChunks: failures.length, totalChunks: chunks.length };
   }
 );
 
@@ -122,64 +184,42 @@ export const checkOutOrder = createAsyncThunk(
   "orders/checkOutOrder",
   async (payload, { rejectWithValue }) => {
     try {
-      const { data } = await axiosInstance.post(
-        "/",
-        payload,
-        {
-          params: {
-            endpoint: "/Order/CheckOutDbCart",
-          },
-        }
-      );
+      const { data } = await axiosInstance.post("/", payload, {
+        params: { endpoint: "/Order/CheckOutDbCart" },
+      });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to checkout order")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to checkout order"));
     }
   }
 );
 
-// Fetch orders by customer/agent
 export const fetchOrdersByCustomer = createAsyncThunk(
   "orders/fetchOrdersByCustomerOrAgent",
   async ({ from, to, customerId }, { rejectWithValue }) => {
     try {
       const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: "/Order/GetOrderByCustomer",
-          from,
-          to,
-          customerId,
-        },
+        params: { endpoint: "/Order/GetOrderByCustomer", from, to, customerId },
+        timeout: LIST_TIMEOUT_MS,
       });
       return data || [];
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch orders")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to fetch orders"));
     }
   }
 );
 
-// Fetch orders by third-party agent
 export const fetchOrdersByThirdParty = createAsyncThunk(
   "orders/fetchOrdersByThirdParty",
   async ({ from, to, ThirdPartyAccountNumber }, { rejectWithValue }) => {
     try {
       const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: "/Order/GetOrderByThirdParty",
-          from,
-          to,
-          ThirdPartyAccountNumber,
-        },
+        params: { endpoint: "/Order/GetOrderByThirdParty", from, to, ThirdPartyAccountNumber },
+        timeout: LIST_TIMEOUT_MS,
       });
       return data || [];
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch orders")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to fetch orders"));
     }
   }
 );
@@ -188,20 +228,12 @@ export const updateOrderTransition = createAsyncThunk(
   "orders/updateOrderTransition",
   async ({ CycleName, OrderId }, { rejectWithValue }) => {
     try {
-      const { data } = await axiosInstance.post(
-        "/",
-        null,
-        {
-          params: {
-            endpoint: `/Order/UpdateOrderTransition/${CycleName}/${OrderId}`,
-          },
-        }
-      );
+      const { data } = await axiosInstance.post("/", null, {
+        params: { endpoint: `/Order/UpdateOrderTransition/${CycleName}/${OrderId}` },
+      });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to update order transition")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to update order transition"));
     }
   }
 );
@@ -211,15 +243,11 @@ export const fetchOrderLifeCycle = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: "/Order/OrderLifeCycle-Get",
-        },
+        params: { endpoint: "/Order/OrderLifeCycle-Get" },
       });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch order lifecycle")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to fetch order lifecycle"));
     }
   }
 );
@@ -229,15 +257,11 @@ export const fetchSalesOrderById = createAsyncThunk(
   async (orderId, { rejectWithValue }) => {
     try {
       const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: `/Order/SalesOrderGet/${orderId}`,
-        },
+        params: { endpoint: `/Order/SalesOrderGet/${orderId}` },
       });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch sales order")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to fetch sales order"));
     }
   }
 );
@@ -247,27 +271,14 @@ export const updateOrderDelivery = createAsyncThunk(
   async ({ orderCode, ...payload }, { rejectWithValue }) => {
     try {
       const OrderCode = payload?.OrderCode ?? orderCode;
-      if (!OrderCode) {
-        throw new Error("OrderCode is required.");
-      }
-
-      // Include OrderCode in the body with correct casing
+      if (!OrderCode) throw new Error("OrderCode is required.");
       const body = { ...payload, OrderCode };
-
-      const { data } = await axiosInstance.post(
-        "/",
-        body,
-        {
-          params: {
-            endpoint: `/Order/OrderDeliveryUpdate/${OrderCode}`,
-          },
-        }
-      );
+      const { data } = await axiosInstance.post("/", body, {
+        params: { endpoint: `/Order/OrderDeliveryUpdate/${OrderCode}` },
+      });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to update order delivery")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to update order delivery"));
     }
   }
 );
@@ -276,58 +287,34 @@ export const orderAddress = createAsyncThunk(
   "orders/orderAddress",
   async (payload, { rejectWithValue }) => {
     try {
-      const { data } = await axiosInstance.post(
-        "/",
-        payload,
-        {
-          params: {
-            endpoint: "/Order/OrderAddress",
-          },
-        }
-      );
+      const { data } = await axiosInstance.post("/", payload, {
+        params: { endpoint: "/Order/OrderAddress" },
+      });
       return data;
     } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to update order address")
-      );
+      return rejectWithValue(toErrorPayload(error, "Failed to update order address"));
+    }
+  }
+);
+
+export const fetchOrderDeliveryAddress = createAsyncThunk(
+  "orders/fetchOrderDeliveryAddress",
+  async (OrderCode, { rejectWithValue }) => {
+    try {
+      if (!OrderCode) throw new Error("OrderCode is required.");
+      const { data } = await axiosInstance.get("/", {
+        params: { endpoint: `/Order/GetOrderDeliveryAddress/${OrderCode}` },
+      });
+      return data;
+    } catch (error) {
+      return rejectWithValue(toErrorPayload(error, "Failed to fetch delivery address"));
     }
   }
 );
 
 /* --------------------------------------------------------------------------
-   GET /Order/GetOrderDeliveryAddress/{OrderCode}
-
-   {OrderCode} is the ORDER CODE ("ORD…"), not the Mongo `_id` — confirmed by
-   the OpenAPI document. It is a second, independent request: the UI must never
-   block the sales-order details on it (it can be markedly slower).
-
-   It now has its own pending/rejected flags (`deliveryAddressFetch`) so:
-     • consumers can render a local placeholder instead of freezing the dialog
-     • a failure is recorded without clobbering `error.deliveryAddress`, which
-       belongs to the address *save* (OrderAddress POST)
+   Slice
    -------------------------------------------------------------------------- */
-export const fetchOrderDeliveryAddress = createAsyncThunk(
-  "orders/fetchOrderDeliveryAddress",
-  async (OrderCode, { rejectWithValue }) => {
-    try {
-      if (!OrderCode) {
-        throw new Error("OrderCode is required.");
-      }
-      const { data } = await axiosInstance.get("/", {
-        params: {
-          endpoint: `/Order/GetOrderDeliveryAddress/${OrderCode}`,
-        },
-      });
-      return data;
-    } catch (error) {
-      return rejectWithValue(
-        toErrorPayload(error, "Failed to fetch delivery address")
-      );
-    }
-  }
-);
-
-// Slice
 const orderSlice = createSlice({
   name: "order",
   initialState: {
@@ -336,25 +323,36 @@ const orderSlice = createSlice({
     deliveryAddress: [],
     deliveryUpdate: null,
     lifeCycle: null,
-
-    // Result of the last CheckOutDbCart call. NOTE: this used to be written
-    // into `state.orders`, which wiped the Orders page list (see DIAGNOSIS.md §5).
     checkoutResult: null,
-
     checkoutDetails: localStorage.getItem("checkoutDetails") || {},
     orderAddressDetails: localStorage.getItem("orderAddressDetails") || {},
-
-    // { from, to } of the most recent fetchOrdersByDate request — used by the
-    // UI to explain which window was searched in the empty state.
     lastFetchMeta: null,
 
-    // Falsy when idle (legacy-compatible), keyed object when active.
-    // See the compatibility layer above.
+    // ✅ NEW: chunked-fetch bookkeeping
+    activeRequestId: null,   // stale chunks/rejections are ignored
+    ordersProgress: null,    // { done, total } while loading
+    ordersWarning: null,     // partial-failure message (non-blocking)
+
     loading: false,
     error: null,
   },
   reducers: {
-    // Clear localStorage and reset state
+    // Internal: merge one chunk into the list (deduped), update progress.
+    ordersChunkResult: (state, action) => {
+      const { requestId, orders: incoming, done, total } = action.payload;
+      if (requestId !== state.activeRequestId) return; // stale response
+      state.ordersProgress = { done, total };
+      if (incoming?.length) {
+        const map = new Map();
+        state.orders.forEach((o) => map.set(orderKey(o), o));
+        incoming.forEach((o) => {
+          const k = orderKey(o);
+          if (!map.has(k)) map.set(k, o);
+        });
+        state.orders = Array.from(map.values());
+      }
+    },
+
     clearLocalStorage: (state) => {
       localStorage.removeItem("checkoutDetails");
       localStorage.removeItem("orderAddressDetails");
@@ -364,18 +362,14 @@ const orderSlice = createSlice({
       state.orders = [];
     },
 
-    // Save checkout details
     saveCheckoutDetails: (state, action) => {
-      const checkoutDetails = action.payload;
-      state.checkoutDetails = checkoutDetails;
-      localStorage.setItem("checkoutDetails", checkoutDetails);
+      state.checkoutDetails = action.payload;
+      localStorage.setItem("checkoutDetails", action.payload);
     },
 
-    // Save order address details
     saveAddressDetails: (state, action) => {
-      const orderAddressDetails = action.payload;
-      state.orderAddressDetails = orderAddressDetails;
-      localStorage.setItem("orderAddressDetails", orderAddressDetails);
+      state.orderAddressDetails = action.payload;
+      localStorage.setItem("orderAddressDetails", action.payload);
     },
 
     updateOrder: (state, action) => {
@@ -386,85 +380,77 @@ const orderSlice = createSlice({
       }
     },
 
-    // Store the local order
-    // WARNING: this overwrites `state.orders` (the API-backed list used by the
-    // admin Orders page) with localStorage data. If the two screens share this
-    // slice, move this to a separate `localOrders` key (see DIAGNOSIS.md §5/§7).
+    // WARNING: overwrites the API-backed list with localStorage data.
     storeLocalOrder: (state, action) => {
       const { userId, orderId } = action.payload;
-      const storedOrders =
-        JSON.parse(localStorage.getItem("userOrders")) || [];
-
-      const existingOrderIndex = storedOrders.findIndex(
-        (order) => order.userId === userId && order.orderId === orderId
+      const storedOrders = JSON.parse(localStorage.getItem("userOrders")) || [];
+      const idx = storedOrders.findIndex(
+        (o) => o.userId === userId && o.orderId === orderId
       );
-
-      if (existingOrderIndex !== -1) {
-        storedOrders[existingOrderIndex] = action.payload;
-      } else {
-        storedOrders.push(action.payload);
-      }
-
+      if (idx !== -1) storedOrders[idx] = action.payload;
+      else storedOrders.push(action.payload);
       state.orders = storedOrders;
       localStorage.setItem("userOrders", JSON.stringify(storedOrders));
     },
 
-    // Fetch orders by user
-    // WARNING: same as storeLocalOrder — writes localStorage data over the
-    // API-backed `state.orders` list (see DIAGNOSIS.md §5/§7).
     fetchOrdersByUser: (state, action) => {
       const userId = action.payload;
-      const storedOrders =
-        JSON.parse(localStorage.getItem("userOrders")) || [];
-      state.orders = storedOrders.filter((order) => order.userId === userId);
+      const storedOrders = JSON.parse(localStorage.getItem("userOrders")) || [];
+      state.orders = storedOrders.filter((o) => o.userId === userId);
     },
 
-    // Clear orders
     clearOrders: (state) => {
       state.orders = [];
       state.salesOrder = [];
       state.deliveryAddress = [];
       state.checkoutResult = null;
       state.lastFetchMeta = null;
-      // Idle values must stay FALSY — a truthy `{...all false}` object keeps
-      // `if (loading) return null` consumers blank forever.
+      state.activeRequestId = null;
+      state.ordersProgress = null;
+      state.ordersWarning = null;
       state.loading = false;
       state.error = null;
     },
   },
   extraReducers: (builder) => {
     builder
-      // -----------------------------------------------------------------
-      // Fetch orders by date (the Orders page list)
-      // -----------------------------------------------------------------
+      // ---------------- Orders list (chunked) ----------------
       .addCase(fetchOrdersByDate.pending, (state, action) => {
+        state.activeRequestId = action.meta.requestId;
         setLoadingFlag(state, "orders", true);
         setErrorFlag(state, "orders", null);
-        state.lastFetchMeta = action.meta?.arg ?? null;
+        state.ordersWarning = null;
+        state.ordersProgress = null;
+        state.orders = []; // fresh range → don't mix old windows in
+        state.lastFetchMeta = action.meta.arg ?? null;
       })
       .addCase(fetchOrdersByDate.fulfilled, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
         setErrorFlag(state, "orders", null);
-        // Normalize: the endpoint is not guaranteed to return a bare array.
-        state.orders = toOrderArray(action.payload);
+        state.ordersProgress = null;
+        const { failedChunks = 0, totalChunks = 0 } = action.payload || {};
+        state.ordersWarning =
+          failedChunks > 0
+            ? `${failedChunks} of ${totalChunks} date ranges failed to load. Some orders may be missing — press Retry.`
+            : null;
       })
       .addCase(fetchOrdersByDate.rejected, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
-        // Surface the failure — previously it was swallowed and the UI showed
-        // "No orders found" for what was really a failed request.
-        // Keep the previous `orders` so a refetch failure doesn't blank the list.
+        state.ordersProgress = null;
+        if (action.payload?.aborted) return; // superseded/unmounted → silent
         setErrorFlag(
           state,
           "orders",
-          action.payload ||
+          (typeof action.payload === "string" ? action.payload : action.payload?.message) ||
             action.error?.message ||
             "Failed to fetch orders by date"
         );
+        // Keep whatever chunks already arrived.
       })
 
-      // -----------------------------------------------------------------
-      // Order lifecycle transition (Update Cycle)
-      // -----------------------------------------------------------------
+      // ---------------- Cycle transition ----------------
       .addCase(updateOrderTransition.pending, (state) => {
         setLoadingFlag(state, "transition", true);
         setErrorFlag(state, "transition", null);
@@ -475,8 +461,7 @@ const orderSlice = createSlice({
         const updatedCode =
           updatedOrder.orderCode ?? updatedOrder.OrderCode ?? updatedOrder._id;
         const index = state.orders.findIndex(
-          (order) =>
-            (order.orderCode ?? order.OrderCode ?? order._id) === updatedCode
+          (o) => (o.orderCode ?? o.OrderCode ?? o._id) === updatedCode
         );
         if (index !== -1) {
           state.orders[index] = { ...state.orders[index], ...updatedOrder };
@@ -484,18 +469,11 @@ const orderSlice = createSlice({
       })
       .addCase(updateOrderTransition.rejected, (state, action) => {
         setLoadingFlag(state, "transition", false);
-        setErrorFlag(
-          state,
-          "transition",
-          action.payload ||
-            action.error?.message ||
-            "Error updating order lifecycle"
-        );
+        setErrorFlag(state, "transition",
+          action.payload || action.error?.message || "Error updating order lifecycle");
       })
 
-      // -----------------------------------------------------------------
-      // Order lifecycle catalog
-      // -----------------------------------------------------------------
+      // ---------------- Lifecycle catalog ----------------
       .addCase(fetchOrderLifeCycle.pending, (state) => {
         setLoadingFlag(state, "lifeCycle", true);
         setErrorFlag(state, "lifeCycle", null);
@@ -509,33 +487,22 @@ const orderSlice = createSlice({
         setErrorFlag(state, "lifeCycle", action.payload);
       })
 
-      // -----------------------------------------------------------------
-      // Checkout
-      // -----------------------------------------------------------------
+      // ---------------- Checkout ----------------
       .addCase(checkOutOrder.pending, (state) => {
         setLoadingFlag(state, "checkout", true);
         setErrorFlag(state, "checkout", null);
       })
       .addCase(checkOutOrder.fulfilled, (state, action) => {
         setLoadingFlag(state, "checkout", false);
-        // Do NOT write this over `state.orders` — that wiped the Orders page.
-        // Consumers of the checkout response should read `state.orders.checkoutResult`.
-        state.checkoutResult = action.payload;
+        state.checkoutResult = action.payload; // never overwrite state.orders
       })
       .addCase(checkOutOrder.rejected, (state, action) => {
         setLoadingFlag(state, "checkout", false);
-        setErrorFlag(
-          state,
-          "checkout",
-          action.payload ||
-            action.error?.message ||
-            "Failed to checkout order"
-        );
+        setErrorFlag(state, "checkout",
+          action.payload || action.error?.message || "Failed to checkout order");
       })
 
-      // -----------------------------------------------------------------
-      // Order address / delivery
-      // -----------------------------------------------------------------
+      // ---------------- Address / delivery ----------------
       .addCase(orderAddress.pending, (state) => {
         setLoadingFlag(state, "deliveryAddress", true);
         setErrorFlag(state, "deliveryAddress", null);
@@ -549,8 +516,6 @@ const orderSlice = createSlice({
         setErrorFlag(state, "deliveryAddress", action.payload);
       })
 
-      // ✅ FIX: the GET now has all three states and its own flag, so the
-      // details dialog can show a placeholder instead of blocking on it.
       .addCase(fetchOrderDeliveryAddress.pending, (state) => {
         setLoadingFlag(state, "deliveryAddressFetch", true);
         setErrorFlag(state, "deliveryAddressFetch", null);
@@ -562,16 +527,8 @@ const orderSlice = createSlice({
       })
       .addCase(fetchOrderDeliveryAddress.rejected, (state, action) => {
         setLoadingFlag(state, "deliveryAddressFetch", false);
-        // Was `state.error = action.payload` — clobbered the whole error field.
-        setErrorFlag(
-          state,
-          "deliveryAddressFetch",
-          action.payload ||
-            action.error?.message ||
-            "Failed to fetch delivery address"
-        );
-        // Keep whatever was there; the dialog falls back to the order's own
-        // address rather than showing nothing.
+        setErrorFlag(state, "deliveryAddressFetch",
+          action.payload || action.error?.message || "Failed to fetch delivery address");
       })
 
       .addCase(updateOrderDelivery.pending, (state) => {
@@ -584,20 +541,11 @@ const orderSlice = createSlice({
       })
       .addCase(updateOrderDelivery.rejected, (state, action) => {
         setLoadingFlag(state, "deliveryUpdate", false);
-        setErrorFlag(
-          state,
-          "deliveryUpdate",
-          action.payload ||
-            action.error?.message ||
-            "Failed to update order delivery"
-        );
+        setErrorFlag(state, "deliveryUpdate",
+          action.payload || action.error?.message || "Failed to update order delivery");
       })
 
-      // -----------------------------------------------------------------
-      // Sales order details (View Details modal)
-      // The payload is stored RAW on purpose — OrderDetailsModal already knows
-      // this shape. Only the loading/error bookkeeping changed.
-      // -----------------------------------------------------------------
+      // ---------------- Sales order details ----------------
       .addCase(fetchSalesOrderById.pending, (state) => {
         setLoadingFlag(state, "salesOrder", true);
         setErrorFlag(state, "salesOrder", null);
@@ -608,51 +556,41 @@ const orderSlice = createSlice({
       })
       .addCase(fetchSalesOrderById.rejected, (state, action) => {
         setLoadingFlag(state, "salesOrder", false);
-        setErrorFlag(
-          state,
-          "salesOrder",
-          action.payload || "Failed to fetch sales order"
-        );
+        setErrorFlag(state, "salesOrder", action.payload || "Failed to fetch sales order");
       })
 
-      // -----------------------------------------------------------------
-      // Customer / third-party lists
-      // -----------------------------------------------------------------
-      .addCase(fetchOrdersByCustomer.pending, (state) => {
+      // ---------------- Customer / third-party lists ----------------
+      .addCase(fetchOrdersByCustomer.pending, (state, action) => {
+        state.activeRequestId = action.meta.requestId; // invalidate stale chunks
         setLoadingFlag(state, "orders", true);
         setErrorFlag(state, "orders", null);
       })
       .addCase(fetchOrdersByCustomer.fulfilled, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
         state.orders = toOrderArray(action.payload);
       })
       .addCase(fetchOrdersByCustomer.rejected, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
-        setErrorFlag(
-          state,
-          "orders",
-          action.payload ||
-            action.error?.message ||
-            "Failed to fetch orders"
-        );
+        setErrorFlag(state, "orders",
+          action.payload || action.error?.message || "Failed to fetch orders");
       })
-      .addCase(fetchOrdersByThirdParty.pending, (state) => {
+      .addCase(fetchOrdersByThirdParty.pending, (state, action) => {
+        state.activeRequestId = action.meta.requestId;
         setLoadingFlag(state, "orders", true);
         setErrorFlag(state, "orders", null);
       })
       .addCase(fetchOrdersByThirdParty.fulfilled, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
         state.orders = toOrderArray(action.payload);
       })
       .addCase(fetchOrdersByThirdParty.rejected, (state, action) => {
+        if (action.meta.requestId !== state.activeRequestId) return;
         setLoadingFlag(state, "orders", false);
-        setErrorFlag(
-          state,
-          "orders",
-          action.payload ||
-            action.error?.message ||
-            "Failed to fetch orders"
-        );
+        setErrorFlag(state, "orders",
+          action.payload || action.error?.message || "Failed to fetch orders");
       });
   },
 });

@@ -1,3 +1,4 @@
+
 import { useEffect, useState, useCallback, useMemo, Component } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
@@ -114,21 +115,23 @@ const getVariantParentId = (variant) =>
   variant?.ParentId ||
   "";
 
-// Module-level so the ProductImagesPanel sub-component can use it too.
+// Module-level so the ProductImagesPanel sub-component and export can use it too.
 // Handles full URLs, Windows paths and rooted "/Media/..." paths.
 const getImageUrl = (imagePath) => {
   if (!imagePath) return "";
   const value = String(imagePath).trim();
+  if (!value) return "";
   if (/^https?:\/\//i.test(value) || /^data:image\//i.test(value)) return value;
 
   // Already a server-relative media path (what GetProductImages often returns).
   const cleaned = value.replace(/^[\\/]+/, "").replace(/\\/g, "/");
+  if (!cleaned) return "";
   if (cleaned.toLowerCase().startsWith("media/")) {
     return `${backendBaseURL}/${cleaned}`;
   }
 
   const fileName = cleaned.split("/").pop();
-  return `${backendBaseURL}/Media/Products_Images/${fileName}`;
+  return fileName ? `${backendBaseURL}/Media/Products_Images/${fileName}` : "";
 };
 
 // Resolve the {Code} used by Product-Get-by-Product_ID / GetProductImages /
@@ -136,7 +139,8 @@ const getImageUrl = (imagePath) => {
 // The OpenAPI document defines {Code} as a plain string; the value that works
 // against the live API is the product GUID (productID). If your database keys
 // images by the ProductId2 business code instead, swap the two operands here.
-const resolveProductCode = (product) => getProductId(product) || getProductId2(product);
+const resolveProductCode = (product) =>
+  getProductId(product) || getProductId2(product);
 
 // Turn whatever the thunk rejected with into readable text for message.error.
 const errorText = (err) => {
@@ -176,9 +180,7 @@ const AdminProducts = () => {
   const productsWithoutVariants = useSelector(
     (state) => state.products?.productsWithoutVariants || []
   );
-  const variantLoading = useSelector(
-    (state) => state.products?.loading
-  );
+  const variantLoading = useSelector((state) => state.products?.loading);
 
   // ✅ NEW: fresh-by-id record (Product-Get-by-Product_ID/{Code})
   const currentProduct = useSelector(
@@ -200,7 +202,8 @@ const AdminProducts = () => {
 
   // ✅ NEW: product images (gallery) manager modal
   const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
-  const [selectedProductForImages, setSelectedProductForImages] = useState(null);
+  const [selectedProductForImages, setSelectedProductForImages] =
+    useState(null);
 
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedProductForImage, setSelectedProductForImage] = useState(null);
@@ -224,22 +227,23 @@ const AdminProducts = () => {
   const variantsByParentId = useMemo(() => {
     const map = { ...ctp002ProductVariants };
 
-    (Array.isArray(allCTP002ProductVariants) ? allCTP002ProductVariants : []).forEach(
-      (variant) => {
-        const parentId = getVariantParentId(variant);
-        if (!parentId) return;
-        if (!map[parentId]) map[parentId] = [];
-        // Avoid duplicates by ctP001ProductId
-        const exists = map[parentId].some(
-          (v) =>
-            (v.ctP001ProductId || v.CTP001ProductId || v.ctp001ProductId) ===
-            (variant.ctP001ProductId ||
-              variant.CTP001ProductId ||
-              variant.ctp001ProductId)
-        );
-        if (!exists) map[parentId].push(variant);
-      }
-    );
+    (Array.isArray(allCTP002ProductVariants)
+      ? allCTP002ProductVariants
+      : []
+    ).forEach((variant) => {
+      const parentId = getVariantParentId(variant);
+      if (!parentId) return;
+      if (!map[parentId]) map[parentId] = [];
+      // Avoid duplicates by ctP001ProductId
+      const exists = map[parentId].some(
+        (v) =>
+          (v.ctP001ProductId || v.CTP001ProductId || v.ctp001ProductId) ===
+          (variant.ctP001ProductId ||
+            variant.CTP001ProductId ||
+            variant.ctp001ProductId)
+      );
+      if (!exists) map[parentId].push(variant);
+    });
 
     return map;
   }, [ctp002ProductVariants, allCTP002ProductVariants]);
@@ -247,7 +251,7 @@ const AdminProducts = () => {
   const variantCountByProductId2 = useMemo(() => {
     const counts = {};
     Object.entries(variantsByParentId).forEach(([parentId, list]) => {
-      counts[parentId] = (Array.isArray(list) ? list.length : 0);
+      counts[parentId] = Array.isArray(list) ? list.length : 0;
     });
     return counts;
   }, [variantsByParentId]);
@@ -290,12 +294,13 @@ const AdminProducts = () => {
 
   const productsWithoutVariantIds = useMemo(() => {
     const set = new Set();
-    (Array.isArray(productsWithoutVariants) ? productsWithoutVariants : []).forEach(
-      (p) => {
-        const id = getProductId(p);
-        if (id) set.add(id);
-      }
-    );
+    (Array.isArray(productsWithoutVariants)
+      ? productsWithoutVariants
+      : []
+    ).forEach((p) => {
+      const id = getProductId(p);
+      if (id) set.add(id);
+    });
     return set;
   }, [productsWithoutVariants]);
 
@@ -339,19 +344,21 @@ const AdminProducts = () => {
       );
     });
 
-  // NEW — active first, then by date within each group
-const sorted = [...filtered].sort((a, b) => {
-  const isActiveA = getStatus(a) == 1 ? 0 : 1;
-  const isActiveB = getStatus(b) == 1 ? 0 : 1;
+    // NEW — active first, then by date within each group
+    const sorted = [...filtered].sort((a, b) => {
+      const isActiveA = getStatus(a) == 1 ? 0 : 1;
+      const isActiveB = getStatus(b) == 1 ? 0 : 1;
 
-  // Primary sort: active products first
-  if (isActiveA !== isActiveB) {
-    return isActiveA - isActiveB;
-  }
+      // Primary sort: active products first
+      if (isActiveA !== isActiveB) {
+        return isActiveA - isActiveB;
+      }
 
-  // Secondary sort: newest first within same status group
-  return new Date(getDateCreated(b) || 0) - new Date(getDateCreated(a) || 0);
-});
+      // Secondary sort: newest first within same status group
+      return (
+        new Date(getDateCreated(b) || 0) - new Date(getDateCreated(a) || 0)
+      );
+    });
 
     const stats = {
       total: sourceProducts.length,
@@ -416,15 +423,18 @@ const sorted = [...filtered].sort((a, b) => {
   /* ✅ View Details — fetch the FRESH record via
      Product-Get-by-Product_ID/{Code}; the row data stays as fallback.
      The gallery is loaded by <ProductImagesPanel /> itself. */
-  const handleViewProductDetails = useCallback((product) => {
-    if (!product) return;
-    setSelectedProduct(product);
-    setIsDetailModalVisible(true);
-    const code = resolveProductCode(product);
-    if (code) {
-      dispatch(fetchProductById(code));
-    }
-  }, [dispatch]);
+  const handleViewProductDetails = useCallback(
+    (product) => {
+      if (!product) return;
+      setSelectedProduct(product);
+      setIsDetailModalVisible(true);
+      const code = resolveProductCode(product);
+      if (code) {
+        dispatch(fetchProductById(code));
+      }
+    },
+    [dispatch]
+  );
 
   const closeDetailModal = useCallback(() => {
     setIsDetailModalVisible(false);
@@ -471,31 +481,29 @@ const sorted = [...filtered].sort((a, b) => {
     [dispatch]
   );
 
- const handleAddVariantToExisting = useCallback(
-  async (ctP001ProductId, name, color, size, imageUrl) => {
-    if (!selectedProductForVariants) return;
+  const handleAddVariantToExisting = useCallback(
+    async (ctP001ProductId, name, color, size, imageUrl) => {
+      if (!selectedProductForVariants) return;
 
-    const ctP002ProductId = getProductId2(selectedProductForVariants);
-    if (!ctP002ProductId) {
-      message.error("Parent product has no CTP002 id.");
-      return;
-    }
+      const ctP002ProductId = getProductId2(selectedProductForVariants);
+      if (!ctP002ProductId) {
+        message.error("Parent product has no CTP002 id.");
+        return;
+      }
 
-    const payload = {
-      ctP002ProductId,
-      variants: [
-        {
-          ctP001ProductId,
-          name: name || "",
-          color: color || "",
-          size: size || "",
-          imageUrl: imageUrl || "",
-          createdAt: new Date().toISOString(), // ← ADD THIS
-        },
-      ],
-    };
-
-
+      const payload = {
+        ctP002ProductId,
+        variants: [
+          {
+            ctP001ProductId,
+            name: name || "",
+            color: color || "",
+            size: size || "",
+            imageUrl: imageUrl || "",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
 
       try {
         await dispatch(createProductVariantAndMerge(payload)).unwrap();
@@ -539,30 +547,29 @@ const sorted = [...filtered].sort((a, b) => {
     setIsDescriptionModalVisible(true);
   }, []);
 
-  const handlePreviewImage = useCallback(
-    (imagePath) => {
-      const imageUrl = getImageUrl(imagePath);
-      if (!imageUrl) {
-        message.warning("No image found for this product");
-        return;
-      }
-      setFullImageUrl(imageUrl);
-      setIsImagePreviewVisible(true);
-    },
-    []
-  );
+  const handlePreviewImage = useCallback((imagePath) => {
+    const imageUrl = getImageUrl(imagePath);
+    if (!imageUrl) {
+      message.warning("No image found for this product");
+      return;
+    }
+    setFullImageUrl(imageUrl);
+    setIsImagePreviewVisible(true);
+  }, []);
 
   const exportToExcel = useCallback(() => {
     try {
       const exportData = filteredProducts.map((product, index) => {
         const productId2 = getProductId2(product);
         const variantCount = variantCountByProductId2[productId2] || 0;
+        const productImageUrl = getImageUrl(getProductImage(product));
+
         return {
           "S/N": index + 1,
           "Product Name": getProductName(product),
           "Product ID": getProductId(product) || "",
           "Parent ID (CTP002)": productId2 || "",
-          "Variants": variantCount,
+          Variants: variantCount,
           Description: getDescription(product),
           "Price (₵)": parseFloat(getPrice(product) || 0).toFixed(2),
           "Old Price (₵)": getOldPrice(product)
@@ -575,6 +582,7 @@ const sorted = [...filtered].sort((a, b) => {
           "Date Created": getDateCreated(product)
             ? new Date(getDateCreated(product)).toLocaleDateString()
             : "",
+          "Product Image URL": productImageUrl,
         };
       });
 
@@ -594,6 +602,7 @@ const sorted = [...filtered].sort((a, b) => {
         { wch: 18 },
         { wch: 14 },
         { wch: 14 },
+        { wch: 55 },
       ];
       XLSX.utils.book_append_sheet(wb, ws, "Products");
       const currentDate = new Date().toISOString().split("T")[0];
@@ -646,7 +655,6 @@ const sorted = [...filtered].sort((a, b) => {
           </div>
         ),
       },
-      
       {
         title: "Price",
         key: "price",
@@ -753,7 +761,6 @@ const sorted = [...filtered].sort((a, b) => {
                 onClick={() => handleManageImages(record)}
               />
             </Tooltip>
-           
             <Tooltip title="View Details">
               <Button
                 type="text"
@@ -793,16 +800,19 @@ const sorted = [...filtered].sort((a, b) => {
     }
 
     // Fallback: scan the flat list for any variant whose parentId matches
-    return (Array.isArray(allCTP002ProductVariants) ? allCTP002ProductVariants : []).filter(
-      (v) => candidates.includes(getVariantParentId(v))
-    );
-  }, [selectedProductForVariants, variantsByParentId, allCTP002ProductVariants]);
+    return (
+      Array.isArray(allCTP002ProductVariants) ? allCTP002ProductVariants : []
+    ).filter((v) => candidates.includes(getVariantParentId(v)));
+  }, [
+    selectedProductForVariants,
+    variantsByParentId,
+    allCTP002ProductVariants,
+  ]);
 
   const availableVariantCandidates = useMemo(() => {
     const addedIds = new Set(
       currentVariantsList.map(
-        (v) =>
-          v.ctP001ProductId || v.CTP001ProductId || v.ctp001ProductId
+        (v) => v.ctP001ProductId || v.CTP001ProductId || v.ctp001ProductId
       )
     );
     return (
@@ -1080,19 +1090,13 @@ const sorted = [...filtered].sort((a, b) => {
                             <List.Item>
                               <List.Item.Meta
                                 avatar={
-                                  <Avatar
-                                    shape="square"
-                                    size={64}
-                                    src={img}
-                                  >
+                                  <Avatar shape="square" size={64} src={img}>
                                     <BranchesOutlined />
                                   </Avatar>
                                 }
                                 title={
                                   <Space>
-                                    <strong>
-                                      {item.name || item.Name}
-                                    </strong>
+                                    <strong>{item.name || item.Name}</strong>
                                     <Tag color="blue">
                                       {item.color || item.Color}
                                     </Tag>
@@ -1253,9 +1257,7 @@ const sorted = [...filtered].sort((a, b) => {
               <Col span={12}>
                 <strong>Variants:</strong>{" "}
                 <Tag color="purple">
-                  {variantCountByProductId2[
-                    getProductId2(detailProduct)
-                  ] || 0}
+                  {variantCountByProductId2[getProductId2(detailProduct)] || 0}
                 </Tag>
               </Col>
             </Row>
@@ -1346,7 +1348,9 @@ const ProductImagesPanel = ({ product }) => {
       );
       const rejected = files.length - valid.length;
       if (rejected > 0) {
-        message.warning(`${rejected} file(s) skipped (not an image or over 5MB).`);
+        message.warning(
+          `${rejected} file(s) skipped (not an image or over 5MB).`
+        );
       }
       if (!valid.length) return;
 
@@ -1728,9 +1732,7 @@ class ProductErrorBoundary extends Component {
             <Button type="primary" onClick={() => window.location.reload()}>
               Reload Page
             </Button>
-            <Button
-              onClick={() => this.setState({ error: null })}
-            >
+            <Button onClick={() => this.setState({ error: null })}>
               Try Again
             </Button>
           </Space>
