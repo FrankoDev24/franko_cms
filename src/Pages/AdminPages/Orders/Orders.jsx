@@ -39,6 +39,20 @@ const formatDate = (value) => {
   return value && d.isValid() ? d.format("DD MMM YYYY, HH:mm") : "—";
 };
 
+/* ---------- "Admin has viewed this order" persistence ---------- */
+const VIEWED_STORAGE_KEY = "orders_admin_viewed_v1";
+
+const loadViewedOrders = () => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(VIEWED_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
 const Orders = () => {
   const dispatch = useDispatch();
   const {
@@ -64,8 +78,10 @@ const Orders = () => {
   const [filterPaymentMode, setFilterPaymentMode] = useState("all");
   const [filterAgentType, setFilterAgentType] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState(null);
-  const [selectedCheckboxes, setSelectedCheckboxes] = useState({});
-  const [selectAll, setSelectAll] = useState(false);
+
+  // ✅ This is the "admin has already viewed the order" map (key -> true)
+  const [viewedOrders, setViewedOrders] = useState(loadViewedOrders);
+
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -77,6 +93,15 @@ const Orders = () => {
   const requestRef = useRef(null); // in-flight thunk promise (has .abort())
 
   const ITEMS_PER_PAGE = 10;
+
+  /* ✅ Persist the "viewed" ticks so they survive a refresh */
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VIEWED_STORAGE_KEY, JSON.stringify(viewedOrders));
+    } catch {
+      /* storage full / disabled – non-fatal */
+    }
+  }, [viewedOrders]);
 
   /* ✅ Abort the previous fetch before starting a new one so a slow, superseded
      request can never overwrite the range the user is actually viewing. */
@@ -114,6 +139,26 @@ const Orders = () => {
     });
     return Object.values(acc);
   }, [orders]);
+
+  /* ✅ If your backend already stores the flag (adminViewed / viewedByAdmin / viewed),
+     seed the local ticks from it. Harmless when the field doesn't exist. */
+  useEffect(() => {
+    if (!groupedOrders.length) return;
+    setViewedOrders((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      groupedOrders.forEach((order) => {
+        const key = order?._key;
+        if (!key || next[key]) return;
+        const serverViewed = order?.adminViewed ?? order?.viewedByAdmin ?? order?.viewed;
+        if (serverViewed === true) {
+          next[key] = true;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [groupedOrders]);
 
   const uniquePaymentModes = useMemo(() => {
     const modes = new Set();
@@ -190,18 +235,37 @@ const Orders = () => {
     }
   }, [dateRange, fetchOrdersForRange]);
 
-  const handleCheckboxClick = useCallback((key) => {
+  /* ---------- viewed-checkbox helpers (derived, never desyncs) ---------- */
+  const pageKeys = useMemo(
+    () => paginatedOrders.map((o) => o._key).filter(Boolean),
+    [paginatedOrders]
+  );
+
+  const allOnPageViewed =
+    pageKeys.length > 0 && pageKeys.every((k) => Boolean(viewedOrders[k]));
+
+  const someOnPageViewed =
+    !allOnPageViewed && pageKeys.some((k) => Boolean(viewedOrders[k]));
+
+  const markOrderViewed = useCallback((key) => {
     if (!key) return;
-    setSelectedCheckboxes((prev) => ({ ...prev, [key]: !prev[key] }));
+    setViewedOrders((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  }, []);
+
+  const toggleViewed = useCallback((key) => {
+    if (!key) return;
+    setViewedOrders((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
   const handleSelectAll = useCallback(() => {
-    const newChecked = !selectAll;
-    setSelectAll(newChecked);
-    const updated = {};
-    paginatedOrders.forEach((o) => { updated[o._key] = newChecked; });
-    setSelectedCheckboxes(updated);
-  }, [selectAll, paginatedOrders]);
+    if (!pageKeys.length) return;
+    const target = !allOnPageViewed;
+    setViewedOrders((prev) => {
+      const next = { ...prev };
+      pageKeys.forEach((k) => { next[k] = target; });
+      return next;
+    });
+  }, [allOnPageViewed, pageKeys]);
 
   const exportToExcel = useCallback(() => {
     if (!filteredOrders.length) { alert("No orders to export"); return; }
@@ -209,19 +273,22 @@ const Orders = () => {
       "Order Code": order.orderCode, "Order Date": order.orderDate,
       "Full Name": order.fullName, "Contact Number": order.contactNumber,
       "Payment Mode": order.paymentMode || "N/A", "Status": order.orderCycle,
-      "Agent Type": agentNames.includes(order.fullName) ? "Agent" : "Non-Agent"
+      "Agent Type": agentNames.includes(order.fullName) ? "Agent" : "Non-Agent",
+      "Viewed By Admin": viewedOrders[order._key] ? "Yes" : "No",
     }));
     const worksheet = XLSX.utils.json_to_sheet(formatted);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Orders");
     XLSX.writeFile(workbook, "Orders.xlsx");
-  }, [filteredOrders]);
+  }, [filteredOrders, viewedOrders]);
 
-  // Instant open: dialog renders the row it already has and fetches the rest.
+  /* ✅ CORE FIX: opening the details modal ticks that order's checkbox. */
   const openDetailModal = useCallback((order) => {
+    if (!order) return;
+    markOrderViewed(order._key || order.orderCode || order._id);
     setSelectedOrder(order);
     setIsDetailModalOpen(true);
-  }, []);
+  }, [markOrderViewed]);
 
   const closeDetailModal = useCallback(() => {
     setIsDetailModalOpen(false);
@@ -416,8 +483,18 @@ const Orders = () => {
         >
           <TableHead>
             <TableRow>
-              <TableCell>
-                <Checkbox checked={selectAll} onChange={handleSelectAll} disabled={busy} />
+              <TableCell padding="checkbox">
+                <Tooltip title={allOnPageViewed ? "Unmark page as viewed" : "Mark page as viewed"}>
+                  <span>
+                    <Checkbox
+                      checked={allOnPageViewed}
+                      indeterminate={someOnPageViewed}
+                      onChange={handleSelectAll}
+                      disabled={busy || pageKeys.length === 0}
+                      inputProps={{ "aria-label": "Mark all rows on this page as viewed" }}
+                    />
+                  </span>
+                </Tooltip>
               </TableCell>
               <TableCell>Order Code</TableCell>
               <TableCell>Order Date</TableCell>
@@ -432,69 +509,87 @@ const Orders = () => {
 
           <TableBody>
             {paginatedOrders.length > 0 ? (
-              paginatedOrders.map((order) => (
-                <TableRow key={order._key} hover>
-                  <TableCell>
-                    <Checkbox
-                      checked={selectedCheckboxes[order._key] || false}
-                      onChange={() => handleCheckboxClick(order._key)}
-                      disabled={busy}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={1}>
-                      <Typography variant="body2">{order.orderCode || "—"}</Typography>
-                      <CopyButton text={order.orderCode} title="Copy Order Code" />
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{formatDate(order.orderDate)}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={1}>
-                      <Typography variant="body2">{order.fullName}</Typography>
-                      <CopyButton text={order.fullName} title="Copy Name" />
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={1}>
-                      <Typography variant="body2">{order.contactNumber}</Typography>
-                      <CopyButton text={order.contactNumber} title="Copy Contact Number" />
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{order.paymentMode || "N/A"}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={order.orderCycle || "Unknown"}
-                      color={statusColors[order.orderCycle] || "default"}
-                      size="small"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Chip
-                      label={agentNames.includes(order.fullName) ? "Agent" : "Non-Agent"}
-                      color={agentNames.includes(order.fullName) ? "primary" : "secondary"}
-                      size="small"
-                      variant="outlined"
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Tooltip title="Update Cycle">
-                      <IconButton
-                        onClick={() => openCycleModal(order)}
+              paginatedOrders.map((order) => {
+                const isViewed = Boolean(viewedOrders[order._key]);
+                return (
+                  <TableRow key={order._key} hover>
+                    <TableCell padding="checkbox">
+                      <Tooltip title={isViewed ? "Admin has viewed this order" : "Not viewed yet by admin"}>
+                        <Checkbox
+                          checked={isViewed}
+                          onChange={() => toggleViewed(order._key)}
+                          disabled={busy}
+                          inputProps={{ "aria-label": "Admin has viewed this order" }}
+                          sx={{
+                            color: isViewed ? "#7cb342" : "inherit",
+                            "&.Mui-checked": { color: "#7cb342" },
+                          }}
+                        />
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Typography variant="body2">{order.orderCode || "—"}</Typography>
+                        <CopyButton text={order.orderCode} title="Copy Order Code" />
+                        {!isViewed && (
+                          <Chip label="New" color="error" size="small" variant="outlined" />
+                        )}
+                      </Stack>
+                    </TableCell>
+                    <TableCell>{formatDate(order.orderDate)}</TableCell>
+                    <TableCell>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Typography variant="body2">{order.fullName}</Typography>
+                        <CopyButton text={order.fullName} title="Copy Name" />
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Typography variant="body2">{order.contactNumber}</Typography>
+                        <CopyButton text={order.contactNumber} title="Copy Contact Number" />
+                      </Stack>
+                    </TableCell>
+                    <TableCell>{order.paymentMode || "N/A"}</TableCell>
+                    <TableCell>
+                      <Chip
+                        label={order.orderCycle || "Unknown"}
+                        color={statusColors[order.orderCycle] || "default"}
                         size="small"
-                        sx={{ color: "#8bc34a", mr: 1 }}
-                        disabled={busy}
-                      >
-                        <Edit />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="View Details">
-                      <IconButton onClick={() => openDetailModal(order)} size="small" disabled={busy}>
-                        <Visibility />
-                      </IconButton>
-                    </Tooltip>
-                  </TableCell>
-                </TableRow>
-              ))
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        label={agentNames.includes(order.fullName) ? "Agent" : "Non-Agent"}
+                        color={agentNames.includes(order.fullName) ? "primary" : "secondary"}
+                        size="small"
+                        variant="outlined"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Tooltip title="Update Cycle">
+                        <IconButton
+                          onClick={() => openCycleModal(order)}
+                          size="small"
+                          sx={{ color: "#8bc34a", mr: 1 }}
+                          disabled={busy}
+                        >
+                          <Edit />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="View Details">
+                        <IconButton
+                          onClick={() => openDetailModal(order)}
+                          size="small"
+                          disabled={busy}
+                          sx={{ color: isViewed ? "#7cb342" : "inherit" }}
+                        >
+                          <Visibility />
+                        </IconButton>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             ) : (
               !busy && (
                 <TableRow>
