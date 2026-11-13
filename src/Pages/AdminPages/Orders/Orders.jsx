@@ -531,9 +531,7 @@ const Orders = () => {
                       <Stack direction="row" alignItems="center" spacing={1}>
                         <Typography variant="body2">{order.orderCode || "—"}</Typography>
                         <CopyButton text={order.orderCode} title="Copy Order Code" />
-                        {!isViewed && (
-                          <Chip label="New" color="error" size="small" variant="outlined" />
-                        )}
+                        
                       </Stack>
                     </TableCell>
                     <TableCell>{formatDate(order.orderDate)}</TableCell>
